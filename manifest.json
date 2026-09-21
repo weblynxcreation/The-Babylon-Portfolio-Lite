@@ -1,7 +1,7 @@
 {
   "name": "The Babylon Portfolio Lite - Capital Rift Market Pilot",
   "version": "1.0.0",
-  "description": "Unified Item Market & Stock Market trading with portfolio analytics. Auto/manual modes, Quest Trade inspired 8-bit UI.",
+  "description": "Read-only Capital Rift portfolio tracker: holdings, dividends and transaction history in a Quest Trade inspired 8-bit UI.",
   "manifest_version": 3,
   "icons": {
     "16": "icons/icon-16.png",
@@ -17,7 +17,7 @@
     "service_worker": "background.js",
     "type": "module"
   },
-  "permissions": ["storage", "scripting", "activeTab", "alarms", "notifications", "tabs"],
+  "permissions": ["storage", "scripting", "activeTab", "alarms", "tabs"],
   "host_permissions": [
     "https://play.capitalrift.com/*",
     "https://*.vercel.app/*"

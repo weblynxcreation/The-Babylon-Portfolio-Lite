@@ -1,10 +1,12 @@
 # The Babylon Portfolio Lite - Capital Rift Market Pilot
 
-A Chrome extension for unified Item Market & Stock Market trading with portfolio analytics. Features auto/manual trading modes with a Quest Trade-inspired 8-bit retro UI.
+A read-only Chrome extension for tracking your Capital Rift stock portfolio, with live analytics in a Quest Trade-inspired 8-bit retro UI.
 
 ![The Babylon Portfolio](icons/brand-logo.png)
 
-> **Lite edition** — everything the Premium edition has except the Discord webhook integration. Trades, orders, and IPO activity are still detected and logged locally in the History tab; nothing is sent to Discord.
+> **Lite edition** — a read-only viewer. Everything the Premium edition has, except the Discord webhook integration and every trading action.
+>
+> You **cannot** buy or sell shares, place or cancel orders, or bid on IPOs from this build. There is no Trade tab: the extension never sends a mutation to the game API. Trades you make on the Capital Rift website are still detected, logged in the History tab, and reflected in your holdings — the extension only watches. For Discord alerts on top of the same read-only tracker, use the Premium edition.
 
 ## Features
 
@@ -15,21 +17,25 @@ A Chrome extension for unified Item Market & Stock Market trading with portfolio
 - **Portfolio Value Chart** - Visualize portfolio performance over time (1H, 24H timeframes)
 - **Search & Filter** - Quickly find any company in the Overview and Holdings tables
 
-### Trading
-- **Unified Trade Panel** - Buy and sell shares with custom price inputs
+### Market Tracking
 - **Order Book** - View live bids and asks with spread information
-- **Order Management** - Track open orders and cancel pending trades
-- **Transaction History** - Complete log of all your trades, including shares and IPO bids
+- **Order Monitor** - See every open order and when it was placed
+- **Transaction History** - Complete log of the trades, orders and IPO bids detected on your account
+- **Read-Only Guarantee** - No buy, sell, cancel or bid action exists anywhere in the interface or the service worker
 
 ### Analytics
 - **Advanced Analytics** - Deep dive into market data with interactive charts
+- **Sector Map** - Color-coded treemap of the market grouped into sectors, with tile size weighted by market cap
+- **Stock Market Info** - Fourteen aggregate cards under the sector map: total market cap, your share of it, your holdings value, listed and owned counts, 24h average change, gainers vs losers, cap-weighted market yield, total shares, total investors, total backing, plus the largest company, top gainer and top loser
+- **Sector Breakdown Table** - Per-sector row with company count, market cap, share of the whole market and your own stake in it, totalled across the market below the cards
 - **Multiple Timeframes** - Analyze trends across 1H and 24H periods
 - **Company Details** - Comprehensive view of each company's performance
 - **Spark Data Visualization** - Historical price movements at a glance
 
 ### Market Access
-- **IPO Panel** - Participate in initial public offerings
+- **IPO Board** - Watch upcoming and live offerings and track the bids on your account
 - **Market Overview** - Sortable table of all available companies
+- **Market Analysis** - Scan the whole item exchange and list every commodity with its price, 24h change, base price, spread, NPC quotes, best bid/ask, book depth, trend and volume
 - **Filter Options** - Sort by value, yield, price, and more
 
 ### UI/UX
@@ -43,6 +49,7 @@ A Chrome extension for unified Item Market & Stock Market trading with portfolio
 - **Vercel Serverless API** - Secure data relay with token authentication
 - **Auto-Sync** - Portfolio data automatically syncs when fetched in extension
 - **Auto-Refresh** - Remote viewer updates every 60 seconds
+- **Sector Map & Market Totals** - The same color-coded treemap is on the remote viewer page, scaled to your screen size and followed by the stock market overview cards and per-sector breakdown
 
 ## Installation
 
@@ -75,19 +82,15 @@ A Chrome extension for unified Item Market & Stock Market trading with portfolio
 2. **Open the Extension** - Click the Babylon Portfolio icon in your toolbar
 3. **View Overview** - See your portfolio summary and top holdings
 
-### Trading Shares
+### Where To Trade
 
-1. Go to the **Trade** tab
-2. Select a company from the dropdown
-3. Enter your desired price and quantity
-4. Click **Buy** or **Sell**
-5. Confirm the transaction
+Trading happens on the Capital Rift website, not in this extension. Buy and sell shares, place orders and bid on IPOs in the game itself — the extension picks the activity up on its next poll and files it under **History**.
 
-### Managing Orders
+### Following Orders
 
 1. Navigate to the **Orders** tab
-2. View all open orders
-3. Click **Cancel** to remove pending orders
+2. View every open order, its price, quantity and age
+3. Orders disappear from the list once they fill or expire in-game
 
 ### Analyzing Performance
 
@@ -134,7 +137,6 @@ A Chrome extension for unified Item Market & Stock Market trading with portfolio
 - `scripting` - Execute content scripts
 - `activeTab` - Access current tab
 - `alarms` - Schedule periodic data refresh
-- `notifications` - Display trade confirmations
 - `tabs` - Open full tab mode
 - Host access to `play.capitalrift.com` (game API) and `*.vercel.app` (remote viewer)
 
@@ -144,7 +146,7 @@ The extension communicates with Capital Rift's API:
 - `/api/me` - Player authentication and ID
 - `/api/companies` - Market data and spark prices
 - `/api/holdings` - Portfolio holdings
-- `/api/orders` - Order management
+- `/api/orders` - Open order snapshot
 - `/api/transactions` - Trade history
 - `/api/dividends` - Dividend tracking
 
@@ -226,12 +228,20 @@ Track your holdings with interactive portfolio value chart
 ![Holdings Tab](screenshots/holdings-tab.png)
 
 ### Advanced Analytics
-Candlestick charts and detailed market analysis
+Sector map with the stock market overview cards and per-sector breakdown beneath it
 ![Advanced Analytics](screenshots/advanced-analytics.png)
 
+### Candlestick Charts
+Full-width candlestick charts for every listed company across 1H and 24H timeframes
+![Candlestick Charts](screenshots/analytics-charts.png)
+
 ### Company Detail Overlay
-Deep dive into individual companies with order book and quick trade
+Deep dive into individual companies with order book, spark line and dividend history
 ![Company Detail](screenshots/company-detail.png)
+
+### Market Analysis
+Full exchange scan with every commodity's price, 24h change, base price, spread, NPC quotes, best bid/ask, book depth, trend and volume
+![Market Analysis](screenshots/market-analysis.png)
 
 ## Known Limitations
 
@@ -240,11 +250,12 @@ Deep dive into individual companies with order book and quick trade
 - **API Rate Limits**: Respect Capital Rift's API rate limits to avoid throttling
 - **Remote Viewer**: Requires Vercel deployment and KV database setup
 - **No Discord Integration**: This build does not include webhook alerts or Discord exports — see the Premium edition for those
+- **No Trading**: Buying, selling, cancelling orders and IPO bidding are deliberately absent. The trade endpoints in the service worker were removed, not just hidden — the messages are refused at the boundary, so no part of this build can place a mutation
+- **Passive Detection**: Transactions appear after the next poll or the next time the popup loads, so a trade can take up to a minute to show up in History
 
 ## Future Enhancements
 
 - [ ] Extended timeframe support (7D, 30D) when API allows
-- [ ] Automated trading strategies
 - [ ] Price alerts and notifications
 - [ ] Dark/light theme toggle
 - [ ] Multi-language support

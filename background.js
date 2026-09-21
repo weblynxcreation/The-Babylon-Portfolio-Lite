@@ -43,13 +43,16 @@ const STORAGE_KEYS = {
   PREVIOUS_ORDERS: 'babylon_previous_orders',
   PREVIOUS_IPO_BIDS: 'babylon_previous_ipo_bids',
   BUILD: 'babylon_build',
-  DIAG: 'babylon_diag'
+  DIAG: 'babylon_diag',
+  MARKET_SCAN: 'babylon_market_scan',
+  MARKET_SCAN_PROGRESS: 'babylon_market_scan_progress',
+  ECONOMY: 'babylon_economy'
 };
 
 // Bump on every detection change. Written to storage at worker start so the
 // popup can show which build is actually live (a stale unpacked extension is
 // otherwise indistinguishable from a broken one).
-const DETECTION_BUILD = 'v2 · 2026-09-20';
+const DETECTION_BUILD = 'v2 · 2026-09-21';
 let portfolioCache = null, dividendsCache = null, transactionsCache = null, settingsCache = null, lastApiCache = null, ipoCache = null, bankTransactionsCache = null;
 let previousHoldingsMap = null;
 let previousOrders = null;
@@ -165,49 +168,6 @@ async function fetchSharesListings() {
   if(!res.ok) throw new Error(`Shares listings HTTP ${res.status}`);
   return res.json();
 }
-async function tradeShares(companyId, side, price, qty) {
-  const res = await fetch(await gameUrl('/shares/trade'), {
-    method:'POST', credentials:'include', headers:JSON_HEADERS,
-    body: JSON.stringify({companyId, side, price, qty})
-  });
-  if(!res.ok) throw new Error(`Trade HTTP ${res.status}`);
-  const result = await res.json();
-  return result;
-}
-async function cancelShareOrder(orderId) {
-  const res = await fetch(await gameUrl('/shares/cancel'), {
-    method:'POST', credentials:'include', headers:JSON_HEADERS,
-    body: JSON.stringify({orderId})
-  });
-  if(!res.ok) throw new Error(`Cancel HTTP ${res.status}`);
-  const result = await res.json();
-  return result;
-}
-
-// IPO API
-async function buyIpo(listingId, price, qty) {
-  const payload = {listingId, price, qty};
-  const res = await fetch(await gameUrl('/ipo/bid'), {
-    method: 'POST',
-    credentials: 'include',
-    headers: JSON_HEADERS,
-    body: JSON.stringify(payload)
-  });
-  if(!res.ok) throw new Error(`IPO buy HTTP ${res.status}`);
-  const result = await res.json();
-  transactionsCache.push({type: 'IPO_BUY', listingId, price, qty, timestamp: Date.now(), result});
-  await persistAll();
-  return result;
-}
-async function cancelIpoBid(listingId) {
-  const res = await fetch(await gameUrl('/ipo/cancel-bid'), {
-    method:'POST', credentials:'include', headers:JSON_HEADERS,
-    body: JSON.stringify({listingId})
-  });
-  if(!res.ok) throw new Error(`IPO cancel HTTP ${res.status}`);
-  const result = await res.json();
-  return result;
-}
 
 // Auction API
 async function createAuction(ref, chunkId, minBid, increment, hours) {
@@ -257,42 +217,342 @@ async function fetchMarketTicker() {
   if(!res.ok) throw new Error(`Market ticker HTTP ${res.status}`);
   return res.json();
 }
-async function placeMarketOrder(commodity, side, price, qty) {
-  const res = await fetch(await gameUrl('/market/order'), {
-    method:'POST', credentials:'include', headers:JSON_HEADERS,
-    body: JSON.stringify({commodity, side, price, qty})
-  });
-  if(!res.ok) throw new Error(`Market order HTTP ${res.status}`);
-  return res.json();
-}
-async function tradeMarket(commodity, side, qty, maxTotal) {
-  const res = await fetch(await gameUrl('/market/trade'), {
-    method:'POST', credentials:'include', headers:JSON_HEADERS,
-    body: JSON.stringify({commodity, side, qty, maxTotal})
-  });
-  if(!res.ok) throw new Error(`Market trade HTTP ${res.status}`);
-  return res.json();
-}
-async function cancelMarketOrder(orderId) {
-  const res = await fetch(await gameUrl('/market/cancel'), {
-    method:'POST', credentials:'include', headers:JSON_HEADERS,
-    body: JSON.stringify({orderId})
-  });
-  if(!res.ok) throw new Error(`Market cancel HTTP ${res.status}`);
-  return res.json();
-}
-async function deliverMarket(dest) {
-  const res = await fetch(await gameUrl('/market/deliver'), {
-    method:'POST', credentials:'include', headers:JSON_HEADERS,
-    body: JSON.stringify({dest})
-  });
-  if(!res.ok) throw new Error(`Market deliver HTTP ${res.status}`);
-  return res.json();
-}
 async function fetchSellable(commodity) {
   const res = await fetch(await gameUrl(`/sellable?commodity=${encodeURIComponent(commodity)}`), {method:'GET', credentials:'include', headers:{'Accept':'application/json'}});
   if(!res.ok) throw new Error(`Sellable HTTP ${res.status}`);
   return res.json();
+}
+
+// Full market scan. /api/market/ticker enumerates every tradable commodity, but
+// book and history are per-item routes with no bulk equivalent, so a scan fans
+// out one request per item through a small pool. Measured live: 329 items x 2
+// requests at concurrency 10 finish in ~5.7 s with zero failures, so no 429
+// backoff is needed. Progress and the finished snapshot both live in storage so
+// the scan survives the popup closing mid-run.
+const MARKET_SCAN_CONCURRENCY = 10;
+const MARKET_SCAN_WINDOW = '24h';
+let marketScanRunning = false;
+
+async function marketScanPool(items, worker, concurrency) {
+  let next = 0;
+  const runner = async () => {
+    while (next < items.length) await worker(items[next++]);
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, runner));
+}
+
+async function scanMarket() {
+  if (marketScanRunning) return { started: false };
+  marketScanRunning = true;
+  const startedAt = Date.now();
+  const progressKey = STORAGE_KEYS.MARKET_SCAN_PROGRESS;
+  let lastPublish = 0;
+  const publish = (progress, force) => {
+    const now = Date.now();
+    if (!force && now - lastPublish < 400) return;
+    lastPublish = now;
+    chrome.storage.local.set({ [progressKey]: { ...progress, startedAt } }).catch(() => {});
+  };
+  try {
+    const ticker = await fetchMarketTicker();
+    const items = Array.isArray(ticker?.items) ? ticker.items : [];
+    const rows = items.map(it => ({
+      id: it.id,
+      kind: it.kind || null,
+      label: it.label || it.id,
+      price: Number(it.price) || 0,
+      dayPct: Number(it.dayPct) || 0,
+      flat: !!it.flat,
+      book: null,
+      history: null,
+      bookError: null,
+      historyError: null
+    }));
+    const total = rows.length * 2;
+    let done = 0;
+    publish({ running: true, done, total }, true);
+
+    await marketScanPool(rows, async (row) => {
+      try { row.book = await fetchMarketBook(row.id); }
+      catch (e) { row.bookError = e.message; }
+      done++; publish({ running: true, done, total });
+    }, MARKET_SCAN_CONCURRENCY);
+
+    await marketScanPool(rows, async (row) => {
+      try { row.history = await fetchMarketHistory(row.id, MARKET_SCAN_WINDOW); }
+      catch (e) { row.historyError = e.message; }
+      done++; publish({ running: true, done, total });
+    }, MARKET_SCAN_CONCURRENCY);
+
+    const scan = {
+      scannedAt: Date.now(),
+      durationMs: Date.now() - startedAt,
+      tickerAt: ticker?.at ?? null,
+      dayStartMs: ticker?.dayStartMs ?? null,
+      window: MARKET_SCAN_WINDOW,
+      itemCount: rows.length,
+      errors: rows.filter(r => r.bookError || r.historyError).length,
+      items: rows
+    };
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.MARKET_SCAN]: scan,
+      [progressKey]: { running: false, done: total, total, finishedAt: Date.now() }
+    });
+    return { started: true, data: scan };
+  } catch (e) {
+    await chrome.storage.local.set({ [progressKey]: { running: false, done: 0, total: 0, finishedAt: Date.now(), error: e.message } });
+    throw e;
+  } finally {
+    marketScanRunning = false;
+  }
+}
+
+// ---- Economy digest (read-only) -------------------------------------------
+// /income/detail alone is ~650 KB live (2 135 rent-income lines, 886 leases,
+// 727 crew rows), so the stored snapshot keeps per-type totals plus a capped,
+// earnings-sorted row list instead of the raw payload — chrome.storage.local
+// is ~10 MB without unlimitedStorage.
+const ECONOMY_SOURCE_CAP = 250;
+const ECONOMY_HISTORY_DAYS = 90;
+
+async function fetchJsonAbs(url) {
+  const res = await fetch(url, { method:'GET', credentials:'include', headers:{'Accept':'application/json'} });
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url.replace(ORIGIN, '')}`);
+  return res.json();
+}
+
+// Total is computed over every row; only the stored sample is capped.
+function economySourceBlock(rows, pickPerMin, cap) {
+  const list = Array.isArray(rows) ? rows : [];
+  const num = r => Number(pickPerMin(r)) || 0;
+  return {
+    count: list.length,
+    perMin: list.reduce((s, r) => s + num(r), 0),
+    rows: list.slice().sort((a, b) => num(b) - num(a)).slice(0, cap)
+  };
+}
+
+function economyNum(rows, pick) {
+  return (Array.isArray(rows) ? rows : []).reduce((s, r) => s + (Number(pick(r)) || 0), 0);
+}
+
+async function fetchEconomy() {
+  const playerId = await ensurePlayerId();
+  const errors = [];
+  const settle = async (label, fn) => {
+    try { return await fn(); }
+    catch (e) { errors.push(`${label}: ${e.message}`); return null; }
+  };
+
+  // income/history ignores `bucket` (always day buckets) but honors `days`.
+  const [game, income, hist, mine, lb, status] = await Promise.all([
+    settle('game', async () => fetchJsonAbs(await gameUrl(''))),
+    settle('income', async () => fetchJsonAbs(await gameUrl('/income/detail'))),
+    settle('history', async () => fetchJsonAbs(await gameUrl(`/income/history?days=${ECONOMY_HISTORY_DAYS}&bucket=day`))),
+    settle('companies', () => fetchJsonAbs(`${ORIGIN}/company/mine`)),
+    settle('leaderboard', () => fetchJsonAbs(`${ORIGIN}/social/leaderboard`)),
+    settle('world', () => fetchJsonAbs(`${ACCESS_API}/status`))
+  ]);
+
+  const r = income?.rates || null;
+  const rates = r ? {
+    grossPerMin: Number(r.grossPerMin) || 0,
+    ingredientCostPerMin: Number(r.ingredientCostPerMin) || 0,
+    wagePerMin: Number(r.wagePerMin) || 0,
+    rentPerMin: Number(r.rentPerMin) || 0,
+    rentIncomePerMin: Number(r.rentIncomePerMin) || 0,
+    netPerMin: Number(r.netPerMin) || 0,
+    interestPerMin: Number(r.interestPerMin) || 0,
+    dayRevenue: Number(r.dayRevenue) || 0,
+    logisticsWagePerMin: Number(r.logisticsWagePerMin) || 0
+  } : null;
+
+  const accounts = Array.isArray(game?.bank?.accounts) ? game.bank.accounts : [];
+  const bank = {
+    total: accounts.reduce((s, a) => s + (Number(a?.balance) || 0), 0),
+    accounts: accounts.map(a => ({
+      id: a?.id ?? null,
+      kind: a?.kind ?? null,
+      name: a?.name ?? 'Account',
+      num: a?.num ?? null,
+      balance: Number(a?.balance) || 0,
+      rate: Number(a?.rate) || 0,
+      earnedSession: Number(a?.earnedSession) || 0,
+      isPrimary: !!a?.isPrimary,
+      txCount: Array.isArray(a?.transactions) ? a.transactions.length : 0,
+      txRecent: (Array.isArray(a?.transactions) ? a.transactions : []).slice(0, 6).map(t => ({
+        ts: Number(t?.ts) || null,
+        desc: t?.desc ?? '',
+        amount: Number(t?.amount) || 0,
+        kind: t?.kind ?? null
+      }))
+    }))
+  };
+
+  const src = income?.sources || {};
+  const cap = ECONOMY_SOURCE_CAP;
+  const sources = {
+    carts: economySourceBlock(src.carts, x => x.grossPerMin, cap),
+    shops: economySourceBlock(src.shops, x => x.grossPerMin, cap),
+    restaurants: economySourceBlock(src.restaurants, x => x.grossPerMin, cap),
+    leases: economySourceBlock(src.leases, x => x.perMin, cap),
+    rentIncome: economySourceBlock(src.rentIncome, x => x.perMin, cap),
+    savings: economySourceBlock(src.savings, x => x.perMin, cap),
+    crews: economySourceBlock(src.crews, x => x.wagePerMin, cap),
+    drivers: economySourceBlock(src.drivers, x => x.effectivePerMin, cap),
+    freight: {
+      dayEarned: Number(src.freight?.dayEarned) || 0,
+      earnedPerMin: Number(src.freight?.earnedPerMin) || 0,
+      paidPerMin: Number(src.freight?.paidPerMin) || 0
+    }
+  };
+  const payroll = {
+    crewWagePerMin: economyNum(src.crews, x => x.wagePerMin),
+    driverWagePerMin: economyNum(src.drivers, x => x.wagePerMin),
+    cartWagePerMin: economyNum(src.carts, x => x.wagePerMin),
+    shopWagePerMin: economyNum(src.shops, x => x.wagePerMin),
+    ingredientCostPerMin: rates?.ingredientCostPerMin ?? 0,
+    rentPerMin: rates?.rentPerMin ?? 0,
+    logisticsWagePerMin: rates?.logisticsWagePerMin ?? 0
+  };
+
+  const rows = Array.isArray(hist?.rows) ? hist.rows : [];
+  const byKind = {};
+  const byDay = {};
+  const totals = { inflow: 0, outflow: 0 };
+  for (const row of rows) {
+    const inflow = Number(row?.inflow) || 0;
+    const outflow = Number(row?.outflow) || 0;
+    const kind = row?.kind || 'other';
+    const kb = byKind[kind] || (byKind[kind] = { inflow: 0, outflow: 0, count: 0 });
+    kb.inflow += inflow; kb.outflow += outflow; kb.count += 1;
+    const t = Number(row?.t) || 0;
+    const db = byDay[t] || (byDay[t] = { t, inflow: 0, outflow: 0 });
+    db.inflow += inflow; db.outflow += outflow;
+    totals.inflow += inflow; totals.outflow += outflow;
+  }
+  const history = {
+    days: Number(hist?.days) || ECONOMY_HISTORY_DAYS,
+    bucket: hist?.bucket || 'day',
+    rowCount: rows.length,
+    totals: { ...totals, net: totals.inflow - totals.outflow },
+    byKind: Object.entries(byKind)
+      .map(([kind, v]) => ({ kind, inflow: v.inflow, outflow: v.outflow, count: v.count, net: v.inflow - v.outflow }))
+      .sort((a, b) => Math.abs(b.net) - Math.abs(a.net)),
+    daily: Object.values(byDay).sort((a, b) => a.t - b.t)
+      .map(d => ({ ...d, net: d.inflow - d.outflow })),
+    // Trimmed projection of the newest rows so the popup can recompute exact
+    // 7/30/90-day windows; the raw payload carries fields the UI never shows.
+    rows: rows.slice().sort((a, b) => (Number(a?.t) || 0) - (Number(b?.t) || 0)).slice(-4000).map(r => ({
+      t: Number(r?.t) || 0,
+      kind: r?.kind || 'other',
+      inflow: Number(r?.inflow) || 0,
+      outflow: Number(r?.outflow) || 0
+    }))
+  };
+
+  const companyList = Array.isArray(mine?.companies) ? mine.companies : [];
+  const companies = [];
+  for (const c of companyList.slice(0, 12)) {
+    const eq = await settle(`equity ${c?.name || c?.id}`, () => fetchJsonAbs(`${ORIGIN}/company/${encodeURIComponent(c.id)}/equity`));
+    const listed = eq?.listed || null;
+    const register = Array.isArray(listed?.register) ? listed.register : [];
+    companies.push({
+      id: c?.id ?? null,
+      name: c?.name ?? 'Company',
+      isFounder: !!c?.isFounder,
+      memberCount: Number(c?.memberCount) || 0,
+      revenueBps: Number(c?.revenueBps) || 0,
+      mainBalance: Number(c?.mainBalance) || 0,
+      revenueBalance: Number(c?.revenueBalance) || 0,
+      status: eq?.status ?? null,
+      bookValue: Number(eq?.bookValue) || 0,
+      minBookValue: Number(eq?.minBookValue) || 0,
+      floorLo: Number(eq?.floorLo) || 0,
+      floorHi: Number(eq?.floorHi) || 0,
+      price: Number(listed?.price) || 0,
+      clearingPrice: Number(listed?.clearingPrice) || 0,
+      marketCap: Number(listed?.marketCap) || 0,
+      sharesOutstanding: Number(listed?.sharesOutstanding) || 0,
+      floatBps: Number(listed?.floatBps) || 0,
+      treasury: Number(listed?.treasury) || 0,
+      holderCount: register.length,
+      topHolders: register.slice().sort((a, b) => (Number(b?.qty) || 0) - (Number(a?.qty) || 0)).slice(0, 10)
+        .map(h => ({ name: h?.name ?? '—', qty: Number(h?.qty) || 0 }))
+    });
+  }
+
+  const lbEntry = x => ({
+    rank: Number(x?.rank) || null,
+    playerId: x?.playerId ?? null,
+    name: x?.name ?? '—',
+    avatar: x?.avatar ?? null,
+    founderNumber: Number(x?.founderNumber) || null,
+    value: Number(x?.value) || 0
+  });
+  const lbEntries = list => (Array.isArray(list) ? list : []).map(lbEntry);
+  const leaderboard = lb ? {
+    updatedAt: Number(lb.updatedAt) || null,
+    total: Number(lb.netWorth?.total) || 0,
+    you: lb.netWorth?.you ? lbEntry(lb.netWorth.you) : null,
+    youReason: lb.netWorth?.youReason ?? null,
+    board: lbEntries(lb.netWorth?.entries).slice(0, 100),
+    wealthClass: lb.netWorthClass?.wealthClass ?? null,
+    globalRank: Number(lb.netWorthClass?.globalRank) || null,
+    fromRank: Number(lb.netWorthClass?.fromRank) || null,
+    toRank: Number(lb.netWorthClass?.toRank) || null,
+    population: Number(lb.netWorthClass?.population) || null,
+    classBoard: lbEntries(lb.netWorthClass?.board?.entries).slice(0, 100),
+    loyalty: lbEntries(lb.loyalty?.entries).slice(0, 25),
+    loyaltyYou: lb.loyalty?.you ? lbEntry(lb.loyalty.you) : null,
+    loyaltyTotal: Number(lb.loyalty?.total) || 0
+  } : null;
+
+  // World-level economy from /access/status (the numbers on the account
+  // portal banner): GDP, combined net worth, player counts, commodity board.
+  const accessQuotes = Array.isArray(status?.world?.quotes) ? status.world.quotes : [];
+  const access = status ? {
+    mode: status.mode ?? null,
+    opensAt: status.opensAt ?? null,
+    serversFull: !!status.serversFull,
+    priceCents: Number(status.priceCents) || 0,
+    maxPlayers: Number(status.maxPlayers) || 0,
+    playersOnline: Number(status.playersOnline) || 0,
+    serverNow: status.serverNow ?? null,
+    stripeReady: !!status.stripeReady,
+    betaPlayers: Number(status.world?.betaPlayers) || 0,
+    worldNetWorth: Number(status.world?.netWorth) || 0,
+    gdp24h: Number(status.world?.gdp24h) || 0,
+    quotes: accessQuotes.map(q => ({
+      short: q?.short ?? '—',
+      name: q?.name ?? 'Commodity',
+      price: Number(q?.price) || 0,
+      units: Number(q?.units) || 0
+    }))
+  } : null;
+
+  const digest = {
+    fetchedAt: Date.now(),
+    playerId,
+    at: Number(income?.at) || null,
+    world: {
+      day: Number(game?.day) || null,
+      realm: game?.realm ?? null,
+      listings: Array.isArray(game?.listings) ? game.listings.length : null,
+      leases: Array.isArray(game?.leases) ? game.leases.length : null,
+      cash: Number(game?.cash) || 0,
+      netWorth: Number(game?.netWorth) || 0
+    },
+    rates,
+    royalty: {
+      lifetime: Number(income?.royalty?.lifetime) || 0,
+      pendingDay: Number(income?.royalty?.pendingDay) || 0
+    },
+    bank, sources, payroll, history, companies, leaderboard, access,
+    errors
+  };
+  await chrome.storage.local.set({ [STORAGE_KEYS.ECONOMY]: digest });
+  return digest;
 }
 
 // Building API
@@ -1036,39 +1296,6 @@ function extractIpoBids(offerings){
   }
   return bids;
 }
-async function buyShares(companyId, qty, price){
-  const payload = {companyId, side: 'buy', qty, price};
-  const res = await fetch(await gameUrl('/shares/trade'), {
-    method: 'POST',
-    credentials: 'include',
-    headers: JSON_HEADERS,
-    body: JSON.stringify(payload)
-  });
-  if(!res.ok) throw new Error(`Buy HTTP ${res.status}`);
-  const result = await res.json();
-  portfolioCache[companyId] = (portfolioCache[companyId] || 0) + qty;
-  transactionsCache.push({type:'BUY', companyId, qty, price, cost: qty*price, timestamp: Date.now(), result});
-  await persistAll();
-  return {success:true, result};
-}
-async function sellShares(companyId, qty, price){
-  const owned = (portfolioCache[companyId] || 0) + (lastApiCache?.holdings?.find(h=>h.companyId===companyId)?.qty || 0);
-  if(owned < qty) return {success:false, error:'Insufficient shares'};
-  const payload = {companyId, side: 'sell', qty, price};
-  const res = await fetch(await gameUrl('/shares/trade'), {
-    method: 'POST',
-    credentials: 'include',
-    headers: JSON_HEADERS,
-    body: JSON.stringify(payload)
-  });
-  if(!res.ok) throw new Error(`Sell HTTP ${res.status}`);
-  const result = await res.json();
-  portfolioCache[companyId] = (portfolioCache[companyId] || 0) - qty;
-  if(portfolioCache[companyId] === 0) delete portfolioCache[companyId];
-  transactionsCache.push({type:'SELL', companyId, qty, price, proceeds: qty*price, timestamp: Date.now(), result});
-  await persistAll();
-  return {success:true, result};
-}
 async function recordDividend(companyId, amtPerShare, sharesOwned){
   const total = amtPerShare * sharesOwned;
   dividendsCache[companyId] = (dividendsCache[companyId] || 0) + total;
@@ -1103,12 +1330,14 @@ async function getPortfolioData(){
     dividendTransactions: bank.dividends || []
   };
 }
-async function syncToRemote() {
+async function syncToRemote(payload) {
   try {
     const settings = await chrome.storage.local.get(['remoteAccessEnabled', 'remoteToken', 'remoteApiUrl']);
     if (!settings.remoteAccessEnabled || !settings.remoteToken || !settings.remoteApiUrl) return;
 
-    const data = await getPortfolioData();
+    // Callers that just fetched the portfolio pass it in; a standalone sync
+    // falls back to fetching it here instead of duplicating the API round-trip.
+    const data = payload || await getPortfolioData();
     const res = await fetch(settings.remoteApiUrl + '/api/portfolio?token=' + encodeURIComponent(settings.remoteToken), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1149,7 +1378,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       switch (msg.type) {
         case 'GET_PORTFOLIO':
           { const data = await getPortfolioData();
-          syncToRemote().catch(() => {});
+          syncToRemote(data).catch(() => {});
           sendResponse({success:true, data}); }
           break;
         case 'GET_PORTFOLIO_DATA':
@@ -1161,17 +1390,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const portfolioData = await getPortfolioData();
           sendResponse({success:true, data: portfolioData});
           break;
+        // Trading is disabled in this edition: the trade/IPO handlers are gone,
+        // so refuse at the message boundary and nothing reaches a mutation.
         case 'BUY_SHARES':
-          sendResponse(await buyShares(msg.companyId, msg.quantity, msg.price));
-          break;
         case 'SELL_SHARES':
-          sendResponse(await sellShares(msg.companyId, msg.quantity, msg.price));
+        case 'TRADE_SHARES':
+        case 'CANCEL_SHARE_ORDER':
+        case 'BUY_IPO':
+        case 'CANCEL_IPO_BID':
+          sendResponse({success:false, error: 'Trading is disabled in The Babylon Portfolio Lite edition'});
           break;
         case 'RECORD_DIVIDEND':
           sendResponse(await recordDividend(msg.companyId, msg.amountPerShare, msg.sharesOwned));
-          break;
-        case 'BUY_IPO':
-          sendResponse({success:true, result: await buyIpo(msg.listingId, msg.price, msg.quantity)});
           break;
         case 'GET_IPO':
           sendResponse({success:true, ipo: ipoCache});
@@ -1206,16 +1436,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'FETCH_SHARES_LISTINGS':
           sendResponse({success:true, data: await fetchSharesListings()});
           break;
-        case 'TRADE_SHARES':
-          sendResponse({success:true, result: await tradeShares(msg.companyId, msg.side, msg.price, msg.qty)});
-          break;
-        case 'CANCEL_SHARE_ORDER':
-          sendResponse({success:true, result: await cancelShareOrder(msg.orderId)});
-          break;
-        // IPO API
-        case 'CANCEL_IPO_BID':
-          sendResponse({success:true, result: await cancelIpoBid(msg.listingId)});
-          break;
         // Auction API
         case 'CREATE_AUCTION':
           sendResponse({success:true, result: await createAuction(msg.ref, msg.chunkId, msg.minBid, msg.increment, msg.hours)});
@@ -1240,20 +1460,39 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({success:true, data: await fetchMarketTicker()});
           break;
         case 'PLACE_MARKET_ORDER':
-          sendResponse({success:true, result: await placeMarketOrder(msg.commodity, msg.side, msg.price, msg.qty)});
-          break;
         case 'TRADE_MARKET':
-          sendResponse({success:true, result: await tradeMarket(msg.commodity, msg.side, msg.qty, msg.maxTotal)});
-          break;
         case 'CANCEL_MARKET_ORDER':
-          sendResponse({success:true, result: await cancelMarketOrder(msg.orderId)});
-          break;
         case 'DELIVER_MARKET':
-          sendResponse({success:true, result: await deliverMarket(msg.dest)});
+          sendResponse({success:false, error: 'Trading is disabled in The Babylon Portfolio Lite edition'});
           break;
         case 'FETCH_SELLABLE':
           sendResponse({success:true, data: await fetchSellable(msg.commodity)});
           break;
+        // Full market scan (read-only; results cached in storage)
+        case 'SCAN_MARKET':
+          if (marketScanRunning) sendResponse({success:true, data:{started:false, running:true}});
+          else {
+            scanMarket().catch(e => console.warn('Market scan failed:', e));
+            sendResponse({success:true, data:{started:true}});
+          }
+          break;
+        case 'GET_MARKET_SCAN': {
+          const stored = await chrome.storage.local.get([STORAGE_KEYS.MARKET_SCAN, STORAGE_KEYS.MARKET_SCAN_PROGRESS]);
+          sendResponse({success:true, data:{
+            scan: stored[STORAGE_KEYS.MARKET_SCAN] || null,
+            progress: stored[STORAGE_KEYS.MARKET_SCAN_PROGRESS] || null
+          }});
+          break;
+        }
+        // Economy digest (read-only; cached in storage like the market scan)
+        case 'FETCH_ECONOMY':
+          sendResponse({success:true, data: await fetchEconomy()});
+          break;
+        case 'GET_ECONOMY': {
+          const stored = await chrome.storage.local.get([STORAGE_KEYS.ECONOMY]);
+          sendResponse({success:true, data: stored[STORAGE_KEYS.ECONOMY] || null});
+          break;
+        }
         // Building API
         case 'BUY_BUILDING':
           sendResponse({success:true, result: await buyBuilding(msg.ref, msg.chunkId)});
@@ -1525,7 +1764,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({success: !!token, token}); }
           break;
         default:
-          sendResponse({success:false, error:'Unknown'});
+          sendResponse({success:false, error:`Unknown message type: ${msg && msg.type}`});
       }
     } catch (e) {
       sendResponse({success:false, error: e.message});
@@ -1534,10 +1773,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true;
 });
 const POLL_ALARM = 'babylon-poll';
+let lastPollAt = 0;
+const MIN_POLL_GAP = 20000; // alarm tick + game-tab heartbeat must not double-fetch the API
 
 // One poll tick: detect + alert. Runs on every alarm wake, which is the only
 // thing that survives the MV3 service worker being shut down.
 async function pollPortfolio() {
+  // Two poll sources exist (the 30s alarm and the game tab's heartbeat) and
+  // they can land seconds apart — the second one re-fetches identical data.
+  if (Date.now() - lastPollAt < MIN_POLL_GAP) return;
+  lastPollAt = Date.now();
   try {
     await ensureStorageReady();
     // Self-heal: keep polling even if the alarm was cleared or never created.

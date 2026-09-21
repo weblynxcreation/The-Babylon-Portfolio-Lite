@@ -201,10 +201,63 @@
       gap: 12px;
       margin-bottom: 20px;
     }
+    .sector-map-wrap { padding: 10px; }
+    .sector-legend {
+      display: flex; flex-wrap: wrap; gap: 4px 10px;
+      margin-bottom: 8px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--bone-muted);
+    }
+    .sector-legend-item { display: inline-flex; align-items: center; gap: 4px; }
+    .sector-legend-swatch { width: 9px; height: 9px; border: 1px solid #000; flex: 0 0 auto; }
+    .sector-map {
+      position: relative;
+      height: 300px;
+      background: var(--ink);
+      border: 2px solid var(--line);
+      overflow: hidden;
+    }
+    .sector-tile {
+      position: absolute;
+      display: flex; flex-direction: column;
+      padding: 3px;
+      overflow: hidden;
+      font-family: var(--font-mono);
+      color: #0d0d0d;
+      border: 1px solid rgba(0,0,0,.35);
+    }
+    .sector-tile.owned { box-shadow: inset 0 0 0 2px var(--gold); }
+    .sector-tile.dark { color: var(--bone); }
+    .sector-tile-name { font-weight: 700; font-size: 9px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sector-tile-cap { font-size: 8px; opacity: .85; white-space: nowrap; }
+    .sector-tile-chg { font-size: 8px; margin-top: auto; white-space: nowrap; }
+    .sector-tile-chg.up { color: #0d3a0d; }
+    .sector-tile-chg.down { color: #4a1010; }
+    .sector-tile.dark .sector-tile-chg.up { color: #9ee29e; }
+    .sector-tile.dark .sector-tile-chg.down { color: #f2a0a0; }
+    .sector-tile.md .sector-tile-chg, .sector-tile.sm .sector-tile-chg { display: none; }
+    .sector-tile.sm .sector-tile-cap { display: none; }
+    .sector-tile.sm { padding: 2px; }
+    .sector-tile.sm .sector-tile-name { font-size: 8px; }
+    .sector-note { font-size: 10px; color: var(--bone-muted); margin-top: 6px; line-height: 1.5; font-family: var(--font-mono); }
+    .market-summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 12px;
+    }
+    .market-summary .stat-card { padding: 14px; }
+    .market-summary .stat-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 6px; }
+    .market-summary .stat-value { font-size: 18px; }
+    .stat-value.red { color: #f87171; }
+    .num-cell { text-align: right; }
+    .you-cell { color: var(--gold); font-weight: 600; }
+    .sector-table { margin-top: 16px; }
     @media (max-width: 768px) {
       .stats-grid { grid-template-columns: 1fr; }
       table { font-size: 11px; }
       th, td { padding: 8px; }
+      .sector-map { height: 240px; }
     }
   </style>
 </head>
@@ -247,6 +300,241 @@
     }
 
     function fmtNum(n) { return Number(n || 0).toLocaleString(); }
+
+    /* ── Sector Map ──────────────────────────────────────────────────────
+       The game API exposes no sector/industry field, so companies are
+       classified by keywords in their name — same table as the extension
+       popup. Layout is one flat squarified treemap of every company sized by
+       market cap; sector membership only colours the tiles and keys the legend. */
+    const SECTOR_DEFS = [
+      { key: 'energy', label: 'Energy', color: '#d9a441', kw: ['energy','oil','petrol','gas','solar','power','coal','fuel','nuclear','wind','hydro'] },
+      { key: 'materials', label: 'Materials', color: '#8e9296', kw: ['mining','mine','ore','iron','steel','metal','gold','silver','copper','lumber','timber','wood','cement','stone','chem','mineral','quarry','aluminium','aluminum'] },
+      { key: 'agriculture', label: 'Agriculture', color: '#6fae4e', kw: ['farm','agri','crop','ranch','cattle','dairy','grain','food','harvest','fish','livestock','poultry','orchard','vineyard','brew','coffee','meat','milk','wheat','corn','barley','soy','rice','sugar','cocoa','tea','spice','seed','fruit','tobacco','rubber','cotton'] },
+      { key: 'manufacturing', label: 'Manufacturing', color: '#bf6b3a', kw: ['manufactur','factor','industri','works','motor','auto','machine','tool','gear','textile','smith','forge','mill','arms','parts','craft'] },
+      { key: 'technology', label: 'Technology', color: '#5f8fd8', kw: ['tech','cyber','data','soft','system','electron','robot','digital','compute','network','code','quantum','chip','circuit'] },
+      { key: 'financials', label: 'Financials', color: '#4fb3a6', kw: ['bank','capital','financ','invest','fund','trust','credit','insur','broker','equity','holdings','exchange','asset','wealth','mortgage'] },
+      { key: 'retail', label: 'Retail', color: '#cf6fa8', kw: ['retail','mart','market','shop','store','goods','trad','sales','outlet','mall','commerce','supply'] },
+      { key: 'realestate', label: 'Real Estate', color: '#a07fd8', kw: ['realt','estate','property','land','housing','home','builder','construct','architect','rent'] },
+      { key: 'logistics', label: 'Logistics', color: '#d16a5a', kw: ['logistic','freight','ship','cargo','transport','truck','rail','courier','delivery','port','airline','express','haul'] }
+    ];
+    const SECTOR_OTHER = { key: 'other', label: 'Other', color: '#4d4d56', kw: [], dark: true };
+    // Word-boundary match at the keyword start only, so "Ironworks" counts as
+    // 'iron' while "Store" does not count as 'ore'.
+    SECTOR_DEFS.forEach(s => { s.re = new RegExp('\\b(' + s.kw.join('|') + ')'); });
+
+    function sectorOf(c) {
+      const hay = ((c.name || '') + ' ' + (c.symbol || '')).toLowerCase();
+      for (const s of SECTOR_DEFS) if (s.re.test(hay)) return s;
+      return SECTOR_OTHER;
+    }
+    function sectorCap(c) {
+      const cap = Number(c.marketCap) || 0;
+      if (cap > 0) return cap;
+      return Math.max(0, (Number(c.currentPrice) || 0) * (Number(c.sharesOutstanding) || 0));
+    }
+
+    // Squarified treemap: [{weight, e}] -> [{e, x, y, w, h}]
+    function squarify(entries, x, y, w, h) {
+      const rects = [];
+      const items = entries.filter(e => e.weight > 0).sort((a, b) => b.weight - a.weight);
+      const total = items.reduce((s, e) => s + e.weight, 0);
+      if (!items.length || total <= 0 || w <= 1 || h <= 1) return rects;
+      const scale = (w * h) / total;
+      const rest = items.map(e => ({ e: e.e, area: e.weight * scale }));
+      const worst = (row, side) => {
+        const s = row.reduce((a, r) => a + r.area, 0);
+        if (s <= 0 || side <= 0) return Infinity;
+        const maxA = Math.max.apply(null, row.map(r => r.area));
+        const minA = Math.min.apply(null, row.map(r => r.area));
+        return Math.max((side * side * maxA) / (s * s), (s * s) / (side * side * minA));
+      };
+      let rx = x, ry = y, rw = w, rh = h;
+      while (rest.length && rw > 1 && rh > 1) {
+        const side = Math.min(rw, rh);
+        const row = [rest.shift()];
+        while (rest.length && worst(row.concat(rest[0]), side) <= worst(row, side)) row.push(rest.shift());
+        const rowSum = row.reduce((a, r) => a + r.area, 0);
+        if (rw >= rh) {
+          const cw = Math.min(rw, rowSum / rh);
+          let cy = ry;
+          row.forEach(r => {
+            const ch = cw > 0 ? Math.min(rh - (cy - ry), r.area / cw) : 0;
+            if (ch > 0) rects.push({ e: r.e, x: rx, y: cy, w: cw, h: ch });
+            cy += ch;
+          });
+          rx += cw; rw -= cw;
+        } else {
+          const chh = Math.min(rh, rowSum / rw);
+          let cx = rx;
+          row.forEach(r => {
+            const cw2 = chh > 0 ? Math.min(rw - (cx - rx), r.area / chh) : 0;
+            if (cw2 > 0) rects.push({ e: r.e, x: cx, y: ry, w: cw2, h: chh });
+            cx += cw2;
+          });
+          ry += chh; rh -= chh;
+        }
+      }
+      return rects;
+    }
+
+    let lastSectorCompanies = [];
+    let lastSectorHeld = new Set();
+
+    function renderSectorMap(companies, heldIds) {
+      const section = document.getElementById('sectorSection');
+      const legend = document.getElementById('sectorLegend');
+      const map = document.getElementById('sectorMap');
+      if (!map) return;
+      lastSectorCompanies = companies || [];
+      lastSectorHeld = heldIds || new Set();
+
+      const items = lastSectorCompanies.map(c => ({ c, cap: sectorCap(c) }));
+
+      // One flat treemap of every company; sectors only colour the tiles and key the legend.
+      const groups = new Map();
+      items.forEach(i => {
+        const s = sectorOf(i.c);
+        if (!groups.has(s.key)) groups.set(s.key, { def: s, total: 0 });
+        groups.get(s.key).total += i.cap;
+      });
+      const sectors = [...groups.values()].sort((a, b) => b.total - a.total);
+      const grand = sectors.reduce((a, s) => a + s.total, 0) || 1;
+
+      if (section) section.style.display = items.length ? 'block' : 'none';
+      if (legend) {
+        legend.innerHTML = sectors.map(s =>
+          '<span class="sector-legend-item"><span class="sector-legend-swatch" style="background:' + s.def.color + ';"></span>' + s.def.label + ' ' + Math.round((s.total / grand) * 100) + '%</span>'
+        ).join('');
+      }
+
+      const W = map.clientWidth, H = map.clientHeight;
+      if (!items.length || W < 40 || H < 40) { map.innerHTML = ''; return; }
+
+      const cells = squarify(items.map(i => ({ weight: i.cap > 0 ? i.cap : 1, e: i })), 0, 0, W, H);
+      let html = '';
+      cells.forEach(r => {
+        const c = r.e.c;
+        const s = sectorOf(c);
+        const x0 = Math.round(r.x), y0 = Math.round(r.y);
+        const tw = Math.max(0, Math.round(r.x + r.w) - x0 - 2);
+        const th = Math.max(0, Math.round(r.y + r.h) - y0 - 2);
+        if (tw < 4 || th < 4) return;
+        const size = tw >= 110 && th >= 72 ? 'xl' : tw >= 78 && th >= 40 ? 'lg' : tw >= 48 && th >= 26 ? 'md' : 'sm';
+        const chg = Number(c.changePct) || 0;
+        const capTxt = r.e.cap > 0 ? fmt(r.e.cap) : '—';
+        const title = c.name + ' · ' + s.label + ' · mkt cap ' + capTxt + ' · $' + (Number(c.currentPrice) || 0).toLocaleString() + ' · ' + (chg >= 0 ? '+' : '') + chg.toFixed(2) + '% · yield ' + (Number(c.yieldPct) || 0).toFixed(1) + '%';
+        html += '<div class="sector-tile ' + size + (s.dark ? ' dark' : '') + (lastSectorHeld.has(c.id) ? ' owned' : '') + '" title="' + title.replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch])) + '" style="left:' + x0 + 'px;top:' + y0 + 'px;width:' + tw + 'px;height:' + th + 'px;background:' + s.color + ';">' +
+          '<span class="sector-tile-name">' + c.name + '</span>' +
+          '<span class="sector-tile-cap">' + capTxt + '</span>' +
+          '<span class="sector-tile-chg ' + (chg >= 0 ? 'up' : 'down') + '">' + (chg >= 0 ? '▲ +' : '▼ ') + chg.toFixed(1) + '%</span>' +
+        '</div>';
+      });
+      map.innerHTML = html;
+    }
+
+    /* ── Stock Market Info ───────────────────────────────────────────────
+       Whole-market aggregates shown under the sector map: totals, the
+       player's share of market cap, breadth, and a per-sector table. */
+    function renderMarketStats(companies, holdings) {
+      const section = document.getElementById('marketSection');
+      const cardsEl = document.getElementById('marketSummaryCards');
+      const tableEl = document.getElementById('marketSectorTable');
+      const noteEl = document.getElementById('marketNote');
+      if (!section || !cardsEl || !tableEl) return;
+      const list = (companies || []).filter(c => sectorCap(c) > 0 || Number(c.currentPrice) > 0);
+      if (!list.length) { section.style.display = 'none'; return; }
+      section.style.display = 'block';
+
+      const esc = s => String(s).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+      const holdingValue = h => Number(h.value) || (Number(h.owned) || 0) * (Number(h.currentPrice) || 0);
+      const heldById = new Map((holdings || []).map(h => [String(h.id), h]));
+      const sectorAgg = new Map();
+      let totalCap = 0, totalShares = 0, totalHolders = 0, totalBacking = 0;
+      let chgSum = 0, yieldCap = 0, gainers = 0, losers = 0;
+      let topGainer = null, topLoser = null, largest = null;
+
+      list.forEach(c => {
+        const cap = sectorCap(c);
+        const chg = Number(c.changePct) || 0;
+        totalCap += cap;
+        totalShares += Number(c.sharesOutstanding) || 0;
+        totalHolders += Number(c.holders) || 0;
+        totalBacking += Number(c.backing) || 0;
+        chgSum += chg;
+        yieldCap += (Number(c.yieldPct) || 0) * cap;
+        if (chg > 0) gainers++; else if (chg < 0) losers++;
+        if (!topGainer || chg > topGainer.chg) topGainer = { name: c.name, chg };
+        if (!topLoser || chg < topLoser.chg) topLoser = { name: c.name, chg };
+        if (!largest || cap > largest.cap) largest = { name: c.name, cap };
+
+        const s = sectorOf(c);
+        if (!sectorAgg.has(s.key)) sectorAgg.set(s.key, { def: s, cap: 0, count: 0, you: 0 });
+        const agg = sectorAgg.get(s.key);
+        agg.cap += cap;
+        agg.count++;
+        const h = heldById.get(String(c.id));
+        if (h) agg.you += holdingValue(h);
+      });
+
+      const owned = (holdings || []).filter(h => (Number(h.owned) || 0) > 0);
+      const ownedValue = owned.reduce((s, h) => s + holdingValue(h), 0);
+      const ownShare = totalCap > 0 ? (ownedValue / totalCap) * 100 : 0;
+      const avgChg = chgSum / list.length;
+      const mktYield = totalCap > 0 ? yieldCap / totalCap : 0;
+      const fmtShare = v => v >= 0.01 ? v.toFixed(2) + '%' : v > 0 ? v.toFixed(4) + '%' : '0.00%';
+      const chgCls = v => v > 0 ? 'green' : v < 0 ? 'red' : '';
+      const cards = [
+        ['Total Market Cap', fmt(totalCap), 'gold'],
+        ['Your Share of Market Cap', fmtShare(ownShare), 'gold'],
+        ['Your Holdings Value', fmt(ownedValue), ''],
+        ['Listed Companies', fmtNum(list.length), ''],
+        ['Companies Owned', fmtNum(owned.length) + ' / ' + fmtNum(list.length), ''],
+        ['24h Avg Change', (avgChg >= 0 ? '+' : '') + avgChg.toFixed(2) + '%', chgCls(avgChg)],
+        ['Gainers / Losers', fmtNum(gainers) + ' / ' + fmtNum(losers), ''],
+        ['Market Yield (cap-wtd)', mktYield.toFixed(2) + '%', ''],
+        ['Total Shares', fmtNum(totalShares), ''],
+        ['Total Investors', fmtNum(totalHolders), ''],
+        ['Total Backing', fmt(totalBacking), ''],
+        ['Largest · ' + largest.name, fmt(largest.cap), ''],
+        ['Top Gainer · ' + topGainer.name, '+' + topGainer.chg.toFixed(2) + '%', 'green'],
+        ['Top Loser · ' + topLoser.name, topLoser.chg.toFixed(2) + '%', 'red']
+      ];
+      cardsEl.innerHTML = cards.map(([label, value, cls]) =>
+        '<div class="stat-card" title="' + esc(label) + '"><div class="stat-label">' + esc(label) + '</div><div class="stat-value ' + cls + '">' + value + '</div></div>'
+      ).join('');
+
+      const sectors = [...sectorAgg.values()].sort((a, b) => b.cap - a.cap);
+      const cell = (txt, cls) => '<td class="' + cls + '">' + txt + '</td>';
+      tableEl.innerHTML =
+        '<thead><tr><th>Sector</th><th class="num-cell">Cos</th><th class="num-cell">Market Cap</th><th class="num-cell">Share</th><th class="num-cell">Your Value</th><th class="num-cell">Your Stake</th></tr></thead>' +
+        '<tbody>' + sectors.map(s =>
+          '<tr>' +
+            '<td><span class="sector-legend-swatch" style="background:' + s.def.color + ';"></span> ' + esc(s.def.label) + '</td>' +
+            cell(fmtNum(s.count), 'num-cell') +
+            cell(fmt(s.cap), 'num-cell') +
+            cell((totalCap > 0 ? (s.cap / totalCap) * 100 : 0).toFixed(1) + '%', 'num-cell') +
+            cell(s.you > 0 ? fmt(s.you) : '—', 'num-cell' + (s.you > 0 ? ' you-cell' : '')) +
+            cell(s.you > 0 ? fmtShare(s.cap > 0 ? (s.you / s.cap) * 100 : 0) : '—', 'num-cell' + (s.you > 0 ? ' you-cell' : '')) +
+          '</tr>'
+        ).join('') +
+        '<tr>' +
+          '<td><span class="sector-legend-swatch" style="background:var(--gold);"></span> TOTAL</td>' +
+          cell(fmtNum(list.length), 'num-cell') +
+          cell(fmt(totalCap), 'num-cell') +
+          cell('100.0%', 'num-cell') +
+          '<td class="num-cell you-cell">' + fmt(ownedValue) + '</td>' +
+          '<td class="num-cell you-cell">' + fmtShare(ownShare) + '</td>' +
+        '</tr>' +
+        '</tbody>';
+      if (noteEl) noteEl.textContent = 'Market totals cover every listed company · your stake = portfolio value at current prices ÷ total market cap';
+    }
+
+    // Re-lay the treemap whenever the viewport changes; it is positioned in pixels.
+    let sectorResizeTimer = null;
+    window.addEventListener('resize', () => {
+      clearTimeout(sectorResizeTimer);
+      sectorResizeTimer = setTimeout(() => renderSectorMap(lastSectorCompanies, lastSectorHeld), 150);
+    });
 
     async function loadPortfolio() {
       const content = document.getElementById('content');
@@ -296,6 +584,28 @@
               <div class="stat-label">Expected Annual Dividends</div>
               <div class="stat-value green">${fmt(expectedAnnual)}</div>
             </div>
+          </div>
+
+          <div class="section" id="sectorSection" style="display:none;">
+            <div class="section-header">
+              <div class="section-icon">🗺️</div>
+              <div class="section-title">Sector Map</div>
+            </div>
+            <div class="sector-map-wrap">
+              <div class="sector-legend" id="sectorLegend"></div>
+              <div class="sector-map" id="sectorMap"></div>
+              <div class="sector-note">Tile size = market cap · colour = sector · gold border = held · sectors inferred from company names</div>
+            </div>
+          </div>
+
+          <div class="section" id="marketSection" style="display:none;">
+            <div class="section-header">
+              <div class="section-icon">📊</div>
+              <div class="section-title">Stock Market</div>
+            </div>
+            <div class="market-summary" id="marketSummaryCards"></div>
+            <table class="sector-table" id="marketSectorTable"></table>
+            <div class="sector-note" id="marketNote"></div>
           </div>
         `;
 
@@ -379,6 +689,8 @@
         }
 
         content.innerHTML = html;
+        renderSectorMap(companies || [], new Set(holdings.map(h => h.id)));
+        renderMarketStats(companies || [], holdings || []);
       } catch (err) {
         console.error('Error loading portfolio:', err);
         content.innerHTML = `<div class="error">Error: ${err.message}</div>`;

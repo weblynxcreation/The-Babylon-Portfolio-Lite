@@ -43,6 +43,7 @@
       --fs-h2: 10px;
       --chart-h: 300px;
       --chart-cols: 1fr;
+      --sector-map-h: 360px;
     }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
@@ -80,6 +81,7 @@
       --fs-h2: 13px;
       --chart-h: 380px;
       --chart-cols: repeat(2, 1fr);
+      --sector-map-h: 520px;
     }
     /* Narrow full-tab windows: keep stat values from clipping */
     @media (max-width: 1000px) {
@@ -172,14 +174,6 @@
     .empty-state { padding:44px 32px; text-align:center; color:var(--bone-muted); font-family:var(--font-pixel); font-size:9px; line-height:2; }
     .empty-state strong { font-family:var(--font-ui); font-size:calc(var(--fs-base) + 1px); font-weight:700; color:var(--bone); display:block; margin-bottom:10px; }
 
-    /* ── Trade panel ────────────────────────────────── */
-    .trade-panel { background:var(--surface); border:2px solid var(--line); box-shadow:var(--shadow-hard); padding:20px; }
-    .trade-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
-    .trade-row:last-child { margin-bottom:0; }
-    .trade-select { flex:1; min-width:200px; background:var(--ink); border:2px solid var(--line); color:var(--bone); font-family:var(--font-mono); font-size:calc(var(--fs-table) + 1px); padding:12px 14px; appearance:none; }
-    .trade-select:focus { outline:none; border-color:var(--accent); }
-    .trade-input { width:96px; background:var(--ink); border:2px solid var(--line); color:var(--bone); font-family:var(--font-mono); font-size:calc(var(--fs-table) + 1px); padding:12px 10px; text-align:center; }
-    .trade-input:focus { outline:none; border-color:var(--accent); }
     .trade-btn { font-family:var(--font-pixel); font-size:calc(var(--fs-tab)); padding:12px 18px; border:2px solid var(--line); cursor:pointer; transition:all .1s; text-transform:uppercase; letter-spacing:.5px; }
     .trade-btn:not(:disabled):hover { transform:translate(-1px,-1px); box-shadow:var(--shadow-hard); }
     .trade-btn:not(:disabled):active { transform:translate(1px,1px); box-shadow:none; }
@@ -192,8 +186,6 @@
     .trade-btn.refresh:hover:not(:disabled) { background:var(--surface-elevated); }
     .trade-btn.gold { background:var(--gold-bg); color:var(--gold); border-color:var(--gold); }
     .trade-btn.secondary { background:var(--surface); color:var(--bone); }
-    .trade-price { font-family:var(--font-mono); font-size:var(--fs-table); color:var(--bone-muted); min-width:150px; text-align:right; }
-    .trade-price-label { font-family:var(--font-pixel); font-size:7px; color:var(--bone-muted); text-transform:uppercase; letter-spacing:.5px; }
     .div-summary-card { background:var(--surface); border:2px solid var(--line); box-shadow:var(--shadow-hard); padding:14px 16px; }
     .div-summary-card .detail-label { margin-bottom:6px; }
     .div-summary-card .detail-value { font-family:var(--font-mono); font-size:var(--fs-stat); font-weight:700; }
@@ -222,6 +214,40 @@
     .analytics-controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
     .analytics-timeframe, .analytics-chart-type { background:var(--ink); border:2px solid var(--line); color:var(--bone); font-family:var(--font-mono); font-size:var(--fs-table); padding:9px 12px; cursor:pointer; }
     .analytics-timeframe:focus, .analytics-chart-type:focus { outline:none; border-color:var(--accent); }
+    /* ── Sector map (Advanced Analytics) ────────────── */
+    .sector-map-section { margin-bottom:18px; }
+    .sector-map-head { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:8px; }
+    .sector-map-title { font-family:var(--font-pixel); font-size:var(--fs-h2); color:var(--gold); letter-spacing:.5px; text-transform:uppercase; }
+    .sector-map-legend { display:flex; gap:12px; flex-wrap:wrap; }
+    .sector-legend-item { display:flex; align-items:center; gap:5px; font-family:var(--font-mono); font-size:9px; color:var(--bone-muted); white-space:nowrap; }
+    .sector-legend-swatch { width:9px; height:9px; border:1px solid var(--ink); box-shadow:1px 1px 0 #000; flex:0 0 auto; }
+    .sector-map { position:relative; height:var(--sector-map-h); background:var(--surface); border:2px solid var(--line); box-shadow:var(--shadow-hard); overflow:hidden; }
+    .sector-tile { position:absolute; display:flex; flex-direction:column; padding:3px 4px; overflow:hidden; cursor:pointer; color:#0d0d0d; border:1px solid rgba(0,0,0,.35); }
+    .sector-tile:hover { filter:brightness(1.15); }
+    .sector-tile.owned { box-shadow:inset 0 0 0 2px var(--gold); }
+    .sector-tile.dark { color:var(--bone); }
+    .sector-tile-name { font-family:var(--font-mono); font-size:10px; font-weight:700; line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .sector-tile-cap { font-family:var(--font-mono); font-size:9px; opacity:.85; white-space:nowrap; }
+    .sector-tile-chg { font-family:var(--font-mono); font-size:9px; margin-top:auto; white-space:nowrap; }
+    .sector-tile-chg.up { color:#0d3a0d; }
+    .sector-tile-chg.down { color:#4a1010; }
+    .sector-tile.dark .sector-tile-chg.up { color:#9ee29e; }
+    .sector-tile.dark .sector-tile-chg.down { color:#f2a0a0; }
+    .sector-tile.md .sector-tile-chg, .sector-tile.sm .sector-tile-chg { display:none; }
+    .sector-tile.sm .sector-tile-cap { display:none; }
+    .sector-tile.sm { padding:2px 3px; }
+    .sector-tile.sm .sector-tile-name { font-size:9px; }
+    .sector-map-note { font-family:var(--font-mono); font-size:9px; color:var(--bone-muted); margin-top:6px; }
+    .market-stats-section { margin-bottom:18px; }
+    .market-stats-section .stat-label { white-space:normal; line-height:1.5; min-height:18px; }
+    .market-sector-table { background:var(--surface); border:2px solid var(--line); box-shadow:var(--shadow-hard); margin-top:12px; }
+    .market-sector-row { display:grid; grid-template-columns:minmax(120px,1.5fr) 52px 1fr 62px 1fr 78px; gap:8px; align-items:center; padding:7px 10px; font-family:var(--font-mono); font-size:var(--fs-table); color:var(--bone); border-bottom:1px solid var(--line); }
+    .market-sector-row:last-child { border-bottom:none; }
+    .market-sector-row .num { text-align:right; }
+    .market-sector-row .you { color:var(--gold); }
+    .market-sector-head-row { font-family:var(--font-pixel); font-size:calc(var(--fs-th) - 1px); color:var(--bone-muted); text-transform:uppercase; letter-spacing:.5px; }
+    .market-sector-row.market-sector-total-row { border-top:2px solid var(--gold); font-weight:700; }
+    .sec-swatch { display:inline-block; width:10px; height:10px; margin-right:7px; border:1px solid rgba(0,0,0,.4); vertical-align:-1px; }
     .charts-grid { display:grid; grid-template-columns:var(--chart-cols); gap:16px; }
     .chart-card { background:var(--surface); border:2px solid var(--line); box-shadow:var(--shadow-hard); overflow:hidden; transition:transform .1s; }
     .chart-card:hover { transform:translateY(-2px); }
@@ -235,6 +261,51 @@
     .chart-yield { font-family:var(--font-mono); font-size:calc(var(--fs-table) - 1px); color:var(--gold); margin-top:4px; }
     .chart-canvas-wrap { position:relative; height:var(--chart-h); padding:8px; }
     .chart-canvas-wrap > div { height:100% !important; }
+
+    /* ── Market analysis ────────────────────────────── */
+    .market-status { display:none; background:var(--surface); border:2px solid var(--line); box-shadow:var(--shadow-hard); padding:12px 14px; margin-bottom:14px; font-family:var(--font-mono); font-size:var(--fs-table); color:var(--bone-muted); }
+    .market-status.error { border-color:var(--red); color:#f87171; }
+    .market-status-head { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+    .market-status-title { font-family:var(--font-pixel); font-size:8px; color:var(--accent); text-transform:uppercase; letter-spacing:.5px; }
+    .market-progress-track { height:10px; background:var(--ink); border:2px solid var(--line); margin-top:10px; }
+    .market-progress-fill { height:100%; width:0%; background:var(--accent); transition:width .2s linear; }
+    .market-summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(118px,1fr)); gap:10px; margin-bottom:14px; }
+    .market-summary .stat-card { padding:10px 12px; }
+    .market-summary .stat-label { font-size:6px; }
+    .market-summary .stat-value { font-size:var(--fs-table); }
+    .market-table-wrap { max-height:56vh; overflow:auto; }
+    .market-table-wrap thead th { position:sticky; top:0; z-index:2; background:var(--surface-elevated); white-space:nowrap; }
+    .market-table-wrap td { white-space:nowrap; }
+    .market-name-cell { font-family:var(--font-ui); font-weight:600; color:var(--accent); }
+    .market-kind { font-family:var(--font-mono); font-size:9px; color:var(--bone-muted); display:block; margin-top:2px; letter-spacing:.5px; }
+    .market-tag { font-family:var(--font-pixel); font-size:6px; padding:2px 5px; border:1px solid var(--line); color:var(--bone-muted); margin-left:6px; text-transform:uppercase; }
+    .market-tag.held { background:var(--gold-bg); color:var(--gold); border-color:var(--gold); }
+    .market-tag.flat { background:var(--surface-elevated); color:var(--bone-muted); }
+    .market-detail-panel { max-width:820px; }
+    .book-col { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .history-points { display:flex; flex-wrap:wrap; gap:4px; max-height:130px; overflow:auto; background:var(--ink); border:1px solid var(--line); padding:8px; }
+    .history-point { font-family:var(--font-mono); font-size:10px; color:var(--bone-muted); background:var(--surface); border:1px solid var(--line); padding:2px 5px; }
+    .market-book-meta { font-family:var(--font-mono); font-size:var(--fs-table); color:var(--gold); }
+
+    /* ── Economy ────────────────────────────────────── */
+    .econ-section { background:var(--surface); border:2px solid var(--line); box-shadow:var(--shadow-hard); padding:14px 16px; margin-bottom:14px; }
+    .econ-section-head { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; border-bottom:2px solid var(--line); padding-bottom:8px; margin-bottom:12px; }
+    .econ-section-title { font-family:var(--font-pixel); font-size:8px; color:var(--accent); text-transform:uppercase; letter-spacing:.5px; }
+    .econ-section-note { font-family:var(--font-mono); font-size:var(--fs-table); color:var(--bone-muted); }
+    .econ-subhead { font-family:var(--font-pixel); font-size:7px; color:var(--gold); text-transform:uppercase; letter-spacing:.5px; margin:12px 0 8px; }
+    .econ-chart-wrap { height:170px; background:var(--ink); border:1px solid var(--line); padding:8px; margin-bottom:12px; }
+    .econ-chart { width:100%; height:100%; image-rendering:pixelated; }
+    .econ-split { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    .econ-table-wrap { max-height:46vh; }
+    .econ-card { background:var(--ink); border:1px solid var(--line); padding:12px 14px; margin-bottom:10px; }
+    .econ-card-head { display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin-bottom:8px; flex-wrap:wrap; }
+    .econ-card-name { font-family:var(--font-ui); font-weight:600; color:var(--accent); font-size:calc(var(--fs-table) + 1px); }
+    .econ-card-meta { font-family:var(--font-mono); font-size:calc(var(--fs-table) - 1px); color:var(--bone-muted); }
+    .econ-metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(96px,1fr)); gap:8px; }
+    .econ-metric { background:var(--surface); border:1px solid var(--line); padding:8px 10px; }
+    .econ-metric-label { font-family:var(--font-pixel); font-size:6px; color:var(--bone-muted); text-transform:uppercase; letter-spacing:.5px; margin-bottom:4px; }
+    .econ-metric-value { font-family:var(--font-mono); font-size:var(--fs-table); color:var(--bone); font-weight:600; }
+    @media (max-width:720px) { .econ-split { grid-template-columns:1fr; } }
 
     .txn-type { font-family:var(--font-pixel); font-size:7px; padding:3px 7px; border:1px solid var(--line); }
     .txn-type.buy { background:var(--green-bg); color:#4ade80; border-color:var(--green); }
@@ -282,8 +353,6 @@
     .ipo-item { background:var(--ink); border:1px solid var(--line); padding:12px 14px; margin-bottom:8px; }
     .ipo-row { display:flex; justify-content:space-between; font-family:var(--font-mono); font-size:calc(var(--fs-table) - 1px); margin-bottom:5px; }
     .ipo-name { font-family:var(--font-ui); font-weight:600; color:var(--accent); }
-    .ipo-btn { font-family:var(--font-pixel); font-size:7px; padding:6px 12px; background:var(--gold-bg); color:var(--gold); border:1px solid var(--gold); cursor:pointer; }
-    .ipo-btn:hover { background:var(--gold); color:var(--ink); }
   </style>
 </head>
 <body>
@@ -308,10 +377,11 @@
       <button class="tab-btn" data-tab="holdings">Holdings</button>
       <button class="tab-btn" data-tab="dividends">Dividends</button>
       <button class="tab-btn" data-tab="analytics">Advanced Analytics</button>
-      <button class="tab-btn" data-tab="trade">Trade</button>
       <button class="tab-btn" data-tab="orders">Orders</button>
       <button class="tab-btn" data-tab="transactions">History</button>
       <button class="tab-btn" data-tab="ipo">IPO</button>
+      <button class="tab-btn" data-tab="market">Market</button>
+      <button class="tab-btn" data-tab="economy">Economy</button>
       <button class="tab-btn" data-tab="settings">Settings</button>
     </div>
   </div>
@@ -327,6 +397,7 @@
             <option value="value">Top Share Value</option>
             <option value="yield">Top Yield</option>
           </select>
+          <button class="trade-btn refresh" id="refreshBtn">Refresh</button>
         </div>
       </div>
       <div class="table-wrap">
@@ -366,7 +437,7 @@
           <tbody id="holdingsBody"></tbody>
         </table>
       </div>
-      <div class="empty-state" id="holdingsEmpty" style="display:none;"><strong>NO HOLDINGS</strong>Buy shares in the Trade tab</div>
+      <div class="empty-state" id="holdingsEmpty" style="display:none;"><strong>NO HOLDINGS</strong>Shares you buy in Capital Rift appear here</div>
     </div>
 
     <!-- Dividends -->
@@ -403,41 +474,35 @@
           <button class="trade-btn secondary" id="analyticsRefreshBtn">Refresh</button>
         </div>
       </div>
+      <div class="sector-map-section" id="sectorMapSection">
+        <div class="sector-map-head">
+          <h4 class="sector-map-title">Sector Map</h4>
+          <div class="sector-map-legend" id="sectorMapLegend"></div>
+        </div>
+        <div class="sector-map" id="sectorMap"></div>
+        <div class="sector-map-note" id="sectorMapNote"></div>
+      </div>
+      <div class="market-stats-section" id="marketStatsSection">
+        <div class="sector-map-head">
+          <h4 class="sector-map-title">Stock Market</h4>
+        </div>
+        <div class="market-summary" id="marketStats"></div>
+        <div class="market-sector-table" id="marketSectorTable"></div>
+        <div class="sector-map-note" id="marketStatsNote"></div>
+      </div>
       <div class="charts-grid" id="analyticsChartsGrid"></div>
       <div class="empty-state" id="analyticsEmpty" style="display:none;"><strong>NO DATA</strong>Select company with price history</div>
-    </div>
-
-    <!-- Trade -->
-    <div class="panel" id="panel-trade">
-      <div class="trade-panel">
-        <div class="trade-row">
-          <select class="trade-select" id="companySelect"><option value="">Select company…</option></select>
-          <input type="number" class="trade-input" id="qtyInput" placeholder="Qty" min="1" />
-          <span class="trade-price" id="tradePrice">Price: $0.00</span>
-        </div>
-        <div class="trade-row">
-          <label class="trade-price-label">Buy Price</label>
-          <input type="number" class="trade-input" id="buyPriceInput" placeholder="Auto" min="0" step="0.01" />
-          <label class="trade-price-label">Sell Price</label>
-          <input type="number" class="trade-input" id="sellPriceInput" placeholder="Auto" min="0" step="0.01" />
-        </div>
-        <div class="trade-row">
-          <button class="trade-btn buy" id="buyBtn" disabled>Buy</button>
-          <button class="trade-btn sell" id="sellBtn" disabled>Sell</button>
-          <button class="trade-btn refresh" id="refreshBtn">Refresh</button>
-        </div>
-      </div>
     </div>
 
     <!-- Orders -->
     <div class="panel" id="panel-orders">
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Company</th><th>Side</th><th>Price</th><th>Qty</th><th>Filled</th><th>Created</th><th>Action</th></tr></thead>
+          <thead><tr><th>Company</th><th>Side</th><th>Price</th><th>Qty</th><th>Filled</th><th>Created</th></tr></thead>
           <tbody id="ordersBody"></tbody>
         </table>
       </div>
-      <div class="empty-state" id="ordersEmpty" style="display:none;"><strong>NO OPEN ORDERS</strong>Orders appear when placed</div>
+      <div class="empty-state" id="ordersEmpty" style="display:none;"><strong>NO OPEN ORDERS</strong>Orders placed in Capital Rift appear here</div>
     </div>
 
     <!-- Transactions -->
@@ -455,6 +520,248 @@
     <div class="panel" id="panel-ipo">
       <div class="empty-state" id="ipoEmpty" style="display:none;"><strong>NO IPO OFFERINGS</strong>Check back for new listings</div>
       <div id="ipoList"></div>
+    </div>
+
+    <!-- Market Analysis -->
+    <div class="panel" id="panel-market">
+      <div class="panel-header">
+        <h2>Market Analysis</h2>
+        <div style="display:flex;gap:10px;align-items:center;">
+          <input type="search" id="marketSearch" class="search-input" placeholder="Search item…" autocomplete="off" />
+          <select id="marketFilter" class="filter-select">
+            <option value="all">All Items</option>
+            <option value="asks">Has Sellers</option>
+            <option value="bids">Has Buyers</option>
+            <option value="held">You Hold</option>
+            <option value="npc">NPC Quoted</option>
+            <option value="flat">Flat Price</option>
+          </select>
+          <button class="trade-btn refresh" id="marketScanBtn">Scan Market</button>
+        </div>
+      </div>
+
+      <div class="market-status" id="marketScanStatus"></div>
+      <div class="market-summary" id="marketSummary"></div>
+
+      <div class="table-wrap market-table-wrap">
+        <table>
+          <thead><tr>
+            <th class="sortable" data-sort="name">Item</th>
+            <th class="sortable" data-sort="price">Price</th>
+            <th class="sortable" data-sort="daypct">24h %</th>
+            <th class="sortable" data-sort="base">Base</th>
+            <th class="sortable" data-sort="spread">Spread</th>
+            <th class="sortable" data-sort="npcbid">NPC Bid</th>
+            <th class="sortable" data-sort="npcask">NPC Ask</th>
+            <th class="sortable" data-sort="bestbid">Best Bid</th>
+            <th class="sortable" data-sort="biddepth">Bid Depth</th>
+            <th class="sortable" data-sort="bestask">Best Ask</th>
+            <th class="sortable" data-sort="askdepth">Ask Depth</th>
+            <th class="sortable" data-sort="trend">Trend 24h</th>
+            <th class="sortable" data-sort="volume">Volume 24h</th>
+            <th class="sortable" data-sort="held">You Hold</th>
+          </tr></thead>
+          <tbody id="marketBody"></tbody>
+        </table>
+      </div>
+      <div class="empty-state" id="marketEmpty" style="display:none;"><strong>NO MARKET DATA</strong>Scan the exchange to list every item on sale</div>
+    </div>
+
+    <!-- Economy -->
+    <div class="panel" id="panel-economy">
+      <div class="panel-header">
+        <h2>Economy</h2>
+        <div style="display:flex;gap:10px;align-items:center;">
+          <input type="search" id="economySearch" class="search-input" placeholder="Search sources &amp; staff…" autocomplete="off" />
+          <select id="economyDays" class="filter-select">
+            <option value="7">Last 7 days</option>
+            <option value="30" selected>Last 30 days</option>
+            <option value="90">Last 90 days</option>
+          </select>
+          <button class="trade-btn refresh" id="economyRefreshBtn">Refresh</button>
+        </div>
+      </div>
+
+      <div class="market-status" id="economyStatus"></div>
+      <div class="summary-grid" id="economySummary"></div>
+
+      <div class="econ-section">
+        <div class="econ-section-head">
+          <div class="econ-section-title">World Economy</div>
+          <div class="econ-section-note" id="economyWorldMeta"></div>
+        </div>
+        <div class="market-summary" id="economyWorld"></div>
+        <div class="econ-subhead">Commodity Quotes</div>
+        <div style="margin-bottom:10px;">
+          <input type="search" id="economyQuotesSearch" class="search-input" placeholder="Search commodities…" autocomplete="off" />
+        </div>
+        <div class="table-wrap econ-table-wrap">
+          <table>
+            <thead><tr>
+              <th class="sortable" data-sort="name">Commodity</th>
+              <th class="sortable" data-sort="price">Price</th>
+              <th class="sortable" data-sort="units">Units</th>
+              <th class="sortable" data-sort="value">Trade Value</th>
+            </tr></thead>
+            <tbody id="economyQuotesBody"></tbody>
+          </table>
+        </div>
+        <div class="empty-state" id="economyQuotesEmpty" style="display:none;"><strong>NO QUOTES</strong>World commodity quotes will appear here</div>
+      </div>
+
+      <div class="econ-section">
+        <div class="econ-section-head">
+          <div class="econ-section-title">Income Rates</div>
+          <div class="econ-section-note" id="economyRatesMeta"></div>
+        </div>
+        <div class="market-summary" id="economyRates"></div>
+      </div>
+
+      <div class="econ-section">
+        <div class="econ-section-head">
+          <div class="econ-section-title">Cash Flow</div>
+          <div class="econ-section-note" id="economyFlowMeta"></div>
+        </div>
+        <div class="econ-chart-wrap"><canvas class="econ-chart" id="economyFlowChart"></canvas></div>
+        <div class="table-wrap econ-table-wrap">
+          <table>
+            <thead><tr>
+              <th>Kind</th>
+              <th class="sortable" data-sort="inflow">Inflow</th>
+              <th class="sortable" data-sort="outflow">Outflow</th>
+              <th class="sortable" data-sort="net">Net</th>
+              <th class="sortable" data-sort="count">Entries</th>
+            </tr></thead>
+            <tbody id="economyFlowBody"></tbody>
+          </table>
+        </div>
+        <div class="empty-state" id="economyFlowEmpty" style="display:none;"><strong>NO CASH FLOW</strong>Income history will appear here</div>
+      </div>
+
+      <div class="econ-section">
+        <div class="econ-section-head">
+          <div class="econ-section-title">Income Sources</div>
+          <div class="econ-section-note" id="economySourcesMeta"></div>
+        </div>
+        <div class="table-wrap econ-table-wrap">
+          <table>
+            <thead><tr>
+              <th class="sortable" data-sort="name">Source</th>
+              <th>Type</th>
+              <th class="sortable" data-sort="permin">Per Min</th>
+              <th class="sortable" data-sort="perday">Per Day</th>
+            </tr></thead>
+            <tbody id="economySourcesBody"></tbody>
+          </table>
+        </div>
+        <div class="empty-state" id="economySourcesEmpty" style="display:none;"><strong>NO SOURCES</strong>Business income will appear here</div>
+      </div>
+
+      <div class="econ-section">
+        <div class="econ-section-head">
+          <div class="econ-section-title">Payroll &amp; Costs</div>
+          <div class="econ-section-note" id="economyPayrollMeta"></div>
+        </div>
+        <div class="market-summary" id="economyPayrollCards"></div>
+        <div class="table-wrap econ-table-wrap">
+          <table>
+            <thead><tr>
+              <th class="sortable" data-sort="name">Worker</th>
+              <th>Role</th>
+              <th class="sortable" data-sort="wage">Wage / Min</th>
+              <th>Details</th>
+            </tr></thead>
+            <tbody id="economyPayrollBody"></tbody>
+          </table>
+        </div>
+        <div class="empty-state" id="economyPayrollEmpty" style="display:none;"><strong>NO STAFF</strong>Crew and drivers will appear here</div>
+      </div>
+
+      <div class="econ-section">
+        <div class="econ-section-head">
+          <div class="econ-section-title">Bank Accounts</div>
+          <div class="econ-section-note" id="economyBankMeta"></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Account</th><th>Kind</th><th>#</th><th>Balance</th><th>Rate / Min</th><th>Session</th><th>Txns</th></tr></thead>
+            <tbody id="economyBankBody"></tbody>
+          </table>
+        </div>
+        <div class="empty-state" id="economyBankEmpty" style="display:none;"><strong>NO ACCOUNTS</strong>Bank data will appear here</div>
+        <div class="econ-subhead">Recent Bank Activity</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Time</th><th>Account</th><th>Description</th><th>Kind</th><th>Amount</th></tr></thead>
+            <tbody id="economyBankTxBody"></tbody>
+          </table>
+        </div>
+        <div class="empty-state" id="economyBankTxEmpty" style="display:none;"><strong>NO RECENT ACTIVITY</strong>Bank activity appears here</div>
+      </div>
+
+      <div class="econ-section">
+        <div class="econ-section-head">
+          <div class="econ-section-title">Companies &amp; Equity</div>
+          <div class="econ-section-note" id="economyCompaniesMeta"></div>
+        </div>
+        <div id="economyCompanies"></div>
+      </div>
+
+      <div class="econ-section">
+        <div class="econ-section-head">
+          <div class="econ-section-title">Wealth Leaderboard</div>
+          <div class="econ-section-note" id="economyLbMeta"></div>
+        </div>
+        <div style="margin-bottom:10px;">
+          <input type="search" id="economyLbSearch" class="search-input" placeholder="Search player…" autocomplete="off" />
+        </div>
+        <div class="table-wrap econ-table-wrap">
+          <table>
+            <thead><tr>
+              <th class="sortable" data-sort="rank">#</th>
+              <th class="sortable" data-sort="name">Player</th>
+              <th class="sortable" data-sort="value">Net Worth</th>
+            </tr></thead>
+            <tbody id="economyLbBody"></tbody>
+          </table>
+        </div>
+        <div class="empty-state" id="economyLbEmpty" style="display:none;"><strong>NO LEADERBOARD</strong>Rankings will appear here</div>
+        <div class="econ-subhead" id="economyLoyaltyMeta">Loyalty Board</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>#</th><th>Player</th><th>Loyalty</th></tr></thead>
+            <tbody id="economyLoyaltyBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="econ-section">
+        <div class="econ-section-head">
+          <div class="econ-section-title">Market Pulse</div>
+          <div class="econ-section-note" id="economyPulseMeta"></div>
+        </div>
+        <div class="market-summary" id="economyPulse"></div>
+        <div class="econ-split">
+          <div>
+            <div class="econ-subhead">Top Gainers (24h)</div>
+            <div class="table-wrap econ-table-wrap">
+              <table>
+                <thead><tr><th>Item</th><th>Price</th><th>24h</th></tr></thead>
+                <tbody id="economyGainersBody"></tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <div class="econ-subhead">Top Losers (24h)</div>
+            <div class="table-wrap econ-table-wrap">
+              <table>
+                <thead><tr><th>Item</th><th>Price</th><th>24h</th></tr></thead>
+                <tbody id="economyLosersBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
   </main>
@@ -488,25 +795,6 @@
           <div class="detail-label">Dividend per Share (Yield × Price)</div>
           <div class="detail-value" id="detailDivPer">$0.00</div>
         </div>
-        <div id="detailTradeSection" style="margin-top:14px;background:var(--surface);border:2px solid var(--line);padding:14px;">
-          <div class="detail-label" style="margin-bottom:10px;">QUICK TRADE</div>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
-            <input type="number" id="detailQtyInput" placeholder="Qty" min="1" class="trade-input" style="width:80px;" />
-            <div style="display:flex;gap:4px;align-items:center;">
-              <label class="trade-price-label">Buy</label>
-              <input type="number" id="detailBuyPrice" placeholder="Auto" min="0" step="0.01" class="trade-input" style="width:90px;" />
-            </div>
-            <div style="display:flex;gap:4px;align-items:center;">
-              <label class="trade-price-label">Sell</label>
-              <input type="number" id="detailSellPrice" placeholder="Auto" min="0" step="0.01" class="trade-input" style="width:90px;" />
-            </div>
-          </div>
-          <div style="display:flex;gap:8px;align-items:center;">
-            <button class="trade-btn buy" id="detailBuyBtn" disabled style="flex:1;font-size:7px;padding:10px 14px;">Buy</button>
-            <button class="trade-btn sell" id="detailSellBtn" disabled style="flex:1;font-size:7px;padding:10px 14px;">Sell</button>
-          </div>
-          <div id="detailTradeInfo" style="font-family:var(--font-mono);font-size:10px;color:var(--bone-muted);margin-top:8px;text-align:center;"></div>
-        </div>
         <div id="orderBookSection" style="margin-top:14px;">
           <div class="detail-label" style="margin-bottom:8px;font-size:8px;">ORDER BOOK</div>
           <div id="orderBookSpread" style="font-family:var(--font-mono);font-size:var(--fs-table);color:var(--gold);margin-bottom:10px;"></div>
@@ -525,6 +813,52 @@
             </div>
           </div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Market Item Detail Overlay -->
+  <div class="detail-overlay hidden" id="marketDetailOverlay">
+    <div class="detail-panel market-detail-panel">
+      <div class="detail-header">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div>
+            <h2 id="marketDetailName"></h2>
+            <div id="marketDetailSub" style="font-family:var(--font-mono);font-size:11px;color:var(--bone-muted);margin-top:3px;letter-spacing:1px;"></div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:14px;">
+          <div style="text-align:right;">
+            <div id="marketDetailPrice" style="font-family:var(--font-mono);font-size:18px;font-weight:700;color:var(--bone);"></div>
+            <div id="marketDetailChange" style="font-family:var(--font-mono);font-size:12px;margin-top:2px;"></div>
+          </div>
+          <button class="detail-close" id="marketDetailClose">Close</button>
+        </div>
+      </div>
+      <div class="detail-content">
+        <div class="detail-grid" id="marketDetailGrid"></div>
+        <div class="detail-label" style="margin-bottom:6px;">PRICE HISTORY — LAST 24H (30-MIN BUCKETS)</div>
+        <canvas class="detail-spark" id="marketDetailSpark" style="height:90px;margin-bottom:12px;"></canvas>
+        <div class="detail-label" style="margin-bottom:6px;">HISTORY SUMMARY</div>
+        <div class="detail-grid" id="marketDetailHistoryMeta" style="grid-template-columns:1fr 1fr 1fr;"></div>
+        <div class="detail-label" style="margin-bottom:6px;">ORDER BOOK SUMMARY</div>
+        <div class="market-book-meta" id="marketDetailBookMeta" style="margin-bottom:12px;"></div>
+        <div class="book-col">
+          <div>
+            <div class="detail-label" style="color:#4ade80;margin-bottom:4px;">BIDS (BUY ORDERS)</div>
+            <div class="table-wrap" style="max-height:180px;overflow-y:auto;">
+              <table><thead><tr><th>Price</th><th>Qty</th><th>Total</th></tr></thead><tbody id="marketDetailBids"></tbody></table>
+            </div>
+          </div>
+          <div>
+            <div class="detail-label" style="color:#f87171;margin-bottom:4px;">ASKS (SELL ORDERS)</div>
+            <div class="table-wrap" style="max-height:180px;overflow-y:auto;">
+              <table><thead><tr><th>Price</th><th>Qty</th><th>Total</th></tr></thead><tbody id="marketDetailAsks"></tbody></table>
+            </div>
+          </div>
+        </div>
+        <div class="detail-label" style="margin:14px 0 6px;">RAW BUCKET VALUES</div>
+        <div class="history-points" id="marketDetailHistoryPoints"></div>
       </div>
     </div>
   </div>
