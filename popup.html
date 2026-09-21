@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>The Babylon Portfolio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --ink: #080808;
+      --surface: #121212;
+      --surface-elevated: #1a1a1a;
+      --bone: #f2f0e8;
+      --bone-muted: #a8a4a0;
+      --line: #232323;
+      --line-2: #2d2d2d;
+      --accent: #e8e4dc;
+      --accent-dim: #6b6864;
+      --green: #2d7d2d;
+      --green-bg: #0d2b0d;
+      --red: #8b1a1a;
+      --red-bg: #2b0d0d;
+      --gold: #c9a84c;
+      --gold-bg: #2b260d;
+      --shadow-hard: 4px 4px 0 #000;
+      --shadow-soft: 0 2px 8px rgba(0,0,0,0.4);
+      --radius: 0;
+      --grid: 32px;
+      --font-pixel: 'Press Start 2P', cursive;
+      --font-mono: 'JetBrains Mono', monospace;
+      --font-ui: 'Inter', system-ui, sans-serif;
+
+      /* Scale tokens — enlarged via .fulltab */
+      --pad: 18px;
+      --fs-base: 14px;
+      --fs-table: 12px;
+      --fs-stat: 17px;
+      --fs-th: 8px;
+      --fs-tab: 8px;
+      --fs-brand: 12px;
+      --fs-h2: 10px;
+      --chart-h: 300px;
+      --chart-cols: 1fr;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      font-family: var(--font-ui);
+      font-size: var(--fs-base);
+      line-height: 1.5;
+      background: var(--ink);
+      color: var(--bone);
+      width: 800px;
+      height: 600px;
+      max-width: 800px;
+      max-height: 600px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-sizing: border-box;
+    }
+    /* Full browser-tab mode: fluid, larger, multi-column charts */
+    body.fulltab {
+      width: 100vw;
+      height: 100vh;
+      max-width: none;
+      max-height: none;
+      --pad: 28px;
+      --fs-base: 16px;
+      --fs-table: 14px;
+      --fs-stat: 24px;
+      --fs-th: 10px;
+      --fs-tab: 10px;
+      --fs-brand: 16px;
+      --fs-h2: 13px;
+      --chart-h: 380px;
+      --chart-cols: repeat(2, 1fr);
+    }
+    /* Narrow full-tab windows: keep stat values from clipping */
+    @media (max-width: 1000px) {
+      body.fulltab .summary-grid { grid-template-columns: repeat(2, 1fr); }
+      body.fulltab { --chart-cols: 1fr; }
+    }
+
+    /* ── Topbar (fixed) ─────────────────────────────── */
+    .topbar {
+      flex: 0 0 auto;
+      padding: var(--pad);
+      padding-bottom: 10px;
+      border-bottom: 2px solid var(--line);
+      background: linear-gradient(180deg, #141414 0%, var(--ink) 100%);
+    }
+    .brand { display:flex; align-items:center; gap:12px; margin-bottom:10px; }
+    .brand-logo { height:80px; width:auto; flex:0 0 auto; object-fit:contain; image-rendering:pixelated; image-rendering:crisp-edges; mix-blend-mode:screen; background:transparent; border:none; box-shadow:none; padding:0; filter:contrast(1.15) brightness(1.05); }
+    body.fulltab .brand-logo { height:240px; }
+    .brand-title { flex:1 1 auto; font-family:var(--font-pixel); font-size:var(--fs-brand); letter-spacing:1px; color:var(--accent); text-shadow:2px 2px 0 #000; display:flex; flex-direction:column; gap:5px; }
+    .brand-title span { font-family:var(--font-mono); font-size:calc(var(--fs-brand) - 3px); color:var(--bone-muted); font-weight:500; letter-spacing:2px; }
+    .brand-right { margin-left:auto; display:flex; align-items:center; gap:12px; }
+    .icon-btn {
+      font-family:var(--font-pixel); font-size:7px; letter-spacing:.5px; text-transform:uppercase;
+      background:var(--surface); color:var(--bone); border:2px solid var(--line);
+      padding:9px 12px; cursor:pointer; transition:all .1s; white-space:nowrap;
+    }
+    .icon-btn:hover { transform:translate(-1px,-1px); box-shadow:var(--shadow-hard); border-color:var(--gold); color:var(--gold); }
+    .icon-btn:active { transform:translate(1px,1px); box-shadow:none; }
+    body.fulltab #openTabBtn { display:none; }
+
+    .summary-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-bottom:10px; }
+    .stat-card {
+      position:relative; background:var(--surface); border:2px solid var(--line);
+      box-shadow:var(--shadow-hard); padding:10px 10px 10px 12px; overflow:hidden;
+      transition:transform .1s, box-shadow .1s;
+    }
+    .stat-card::before { content:''; position:absolute; left:0; top:0; bottom:0; width:4px; background:var(--accent-dim); }
+    .stat-card:nth-child(1)::before { background:var(--accent); }
+    .stat-card:nth-child(2)::before { background:#4ade80; }
+    .stat-card:nth-child(3)::before { background:var(--gold); }
+    .stat-card:nth-child(4)::before { background:#f87171; }
+    .stat-card:hover { transform:translate(-1px,-1px); box-shadow:5px 5px 0 #000; }
+    .stat-label { font-family:var(--font-pixel); font-size:calc(var(--fs-th) - 1px); color:var(--bone-muted); text-transform:uppercase; letter-spacing:.5px; margin-bottom:6px; }
+    .stat-value { font-family:var(--font-mono); font-size:calc(var(--fs-stat) - 1px); font-weight:700; color:var(--bone); }
+    .stat-value.positive { color:#4ade80; } .stat-value.negative { color:#f87171; } .stat-value.gold { color:var(--gold); }
+
+    .tabs { display:flex; gap:4px; flex-wrap:wrap; }
+    .tab-btn {
+      font-family:var(--font-pixel); font-size:var(--fs-tab); background:transparent;
+      border:2px solid transparent; color:var(--bone-muted); padding:7px 10px; cursor:pointer;
+      transition:all .1s; text-transform:uppercase; letter-spacing:.5px; white-space:nowrap;
+    }
+    .tab-btn:hover { color:var(--bone); border-color:var(--line-2); background:var(--surface); }
+    .tab-btn.active { color:var(--ink); background:var(--accent); border-color:var(--accent); box-shadow:var(--shadow-hard); }
+    .tab-btn:focus-visible { outline:2px solid var(--gold); outline-offset:2px; }
+
+    /* ── Main (scrollable) ──────────────────────────── */
+    .main { flex:1 1 auto; overflow-y:auto; overflow-x:hidden; padding:14px var(--pad); }
+    .panel { display:none; }
+    .panel.active { display:block; animation:panelIn .15s ease; }
+    @keyframes panelIn { from {opacity:0; transform:translateY(4px);} to {opacity:1; transform:translateY(0);} }
+
+    .table-wrap { overflow-x:auto; background:var(--surface); border:2px solid var(--line); box-shadow:var(--shadow-hard); }
+    table { width:100%; border-collapse:collapse; font-family:var(--font-mono); font-size:var(--fs-table); }
+    thead th {
+      position:sticky; top:0; z-index:2;
+      text-align:left; padding:12px 14px; background:var(--surface-elevated);
+      border-bottom:2px solid var(--line); font-family:var(--font-pixel); font-size:var(--fs-th);
+      color:var(--bone-muted); text-transform:uppercase; letter-spacing:.5px; font-weight:400;
+    }
+    thead th.sortable { cursor:pointer; user-select:none; transition:color .1s; }
+    thead th.sortable:hover { color:var(--bone); }
+    thead th.sortable::after { content:'\2195'; margin-left:6px; opacity:.35; font-family:var(--font-mono); }
+    thead th.sortable.sorted-asc::after { content:'\25B2'; opacity:1; color:var(--gold); }
+    thead th.sortable.sorted-desc::after { content:'\25BC'; opacity:1; color:var(--gold); }
+    td { padding:11px 14px; border-bottom:1px solid var(--line-2); color:var(--bone); }
+    tbody tr:nth-child(even) { background:rgba(255,255,255,0.015); }
+    tbody tr:last-child td { border-bottom:none; }
+    tbody tr:hover { background:var(--surface-elevated); }
+    tfoot td { padding:12px 14px; border-top:2px solid var(--line); background:var(--surface-elevated); font-family:var(--font-mono); font-size:var(--fs-table); font-weight:700; color:var(--gold); }
+    .company-name { font-family:var(--font-ui); font-weight:600; color:var(--accent); }
+    .company-symbol { font-size:calc(var(--fs-table) - 2px); color:var(--bone-muted); margin-left:6px; }
+    .price-cell { font-weight:500; }
+    .value-cell { font-weight:700; }
+    .pct-cell { color:var(--bone-muted); }
+    .div-cell { color:#4ade80; font-weight:600; }
+    .change-cell.positive { color:#4ade80; font-weight:600; } .change-cell.negative { color:#f87171; font-weight:600; }
+    .own-badge { display:inline-block; background:var(--green-bg); color:#4ade80; font-family:var(--font-pixel); font-size:6px; padding:3px 7px; border:1px solid var(--green); margin-left:8px; vertical-align:middle; }
+    .spark-canvas { display:block; height:28px; width:100%; max-width:180px; image-rendering:pixelated; }
+    .empty-state { padding:44px 32px; text-align:center; color:var(--bone-muted); font-family:var(--font-pixel); font-size:9px; line-height:2; }
+    .empty-state strong { font-family:var(--font-ui); font-size:calc(var(--fs-base) + 1px); font-weight:700; color:var(--bone); display:block; margin-bottom:10px; }
+
+    /* ── Trade panel ────────────────────────────────── */
+    .trade-panel { background:var(--surface); border:2px solid var(--line); box-shadow:var(--shadow-hard); padding:20px; }
+    .trade-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
+    .trade-row:last-child { margin-bottom:0; }
+    .trade-select { flex:1; min-width:200px; background:var(--ink); border:2px solid var(--line); color:var(--bone); font-family:var(--font-mono); font-size:calc(var(--fs-table) + 1px); padding:12px 14px; appearance:none; }
+    .trade-select:focus { outline:none; border-color:var(--accent); }
+    .trade-input { width:96px; background:var(--ink); border:2px solid var(--line); color:var(--bone); font-family:var(--font-mono); font-size:calc(var(--fs-table) + 1px); padding:12px 10px; text-align:center; }
+    .trade-input:focus { outline:none; border-color:var(--accent); }
+    .trade-btn { font-family:var(--font-pixel); font-size:calc(var(--fs-tab)); padding:12px 18px; border:2px solid var(--line); cursor:pointer; transition:all .1s; text-transform:uppercase; letter-spacing:.5px; }
+    .trade-btn:not(:disabled):hover { transform:translate(-1px,-1px); box-shadow:var(--shadow-hard); }
+    .trade-btn:not(:disabled):active { transform:translate(1px,1px); box-shadow:none; }
+    .trade-btn:disabled { opacity:.35; cursor:not-allowed; }
+    .trade-btn.buy { background:var(--green-bg); color:#4ade80; border-color:var(--green); }
+    .trade-btn.buy:hover:not(:disabled) { background:var(--green); color:var(--ink); }
+    .trade-btn.sell { background:var(--red-bg); color:#f87171; border-color:var(--red); }
+    .trade-btn.sell:hover:not(:disabled) { background:var(--red); color:var(--ink); }
+    .trade-btn.refresh { background:var(--surface); color:var(--bone); margin-left:auto; }
+    .trade-btn.refresh:hover:not(:disabled) { background:var(--surface-elevated); }
+    .trade-btn.gold { background:var(--gold-bg); color:var(--gold); border-color:var(--gold); }
+    .trade-btn.secondary { background:var(--surface); color:var(--bone); }
+    .trade-price { font-family:var(--font-mono); font-size:var(--fs-table); color:var(--bone-muted); min-width:150px; text-align:right; }
+    .trade-price-label { font-family:var(--font-pixel); font-size:7px; color:var(--bone-muted); text-transform:uppercase; letter-spacing:.5px; }
+    .div-summary-card { background:var(--surface); border:2px solid var(--line); box-shadow:var(--shadow-hard); padding:14px 16px; }
+    .div-summary-card .detail-label { margin-bottom:6px; }
+    .div-summary-card .detail-value { font-family:var(--font-mono); font-size:var(--fs-stat); font-weight:700; }
+
+    .panel-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; padding:14px 16px; background:var(--surface-elevated); border:2px solid var(--line); box-shadow:var(--shadow-hard); }
+    .panel-header h2 { font-family:var(--font-pixel); font-size:var(--fs-h2); color:var(--accent); text-transform:uppercase; letter-spacing:.5px; margin:0; }
+
+    /* ── Settings panel ─────────────────────────────── */
+    .setting-option:hover { border-color:var(--line-2) !important; background:var(--surface-elevated) !important; }
+    .setting-option:has(input:checked) { border-color:var(--gold) !important; background:var(--gold-bg) !important; }
+    .status-msg { padding:8px 10px; border:2px solid var(--line); font-family:var(--font-mono); font-size:11px; }
+    .status-msg.success { border-color:var(--green); color:#4ade80; background:var(--green-bg); }
+    .status-msg.error { border-color:var(--red); color:#f87171; background:var(--red-bg); }
+
+    .filter-select { background:var(--ink); border:2px solid var(--line); color:var(--bone); font-family:var(--font-mono); font-size:var(--fs-table); padding:9px 12px; appearance:none; cursor:pointer; }
+    .filter-select:focus { outline:none; border-color:var(--accent); }
+
+    .search-input { background:var(--ink); border:2px solid var(--line); color:var(--bone); font-family:var(--font-mono); font-size:var(--fs-table); padding:8px 10px; width:180px; }
+    .search-input::placeholder { color:var(--bone-muted); }
+    .search-input:focus { outline:none; border-color:var(--accent); }
+    .search-input::-webkit-search-cancel-button { -webkit-appearance:none; appearance:none; width:9px; height:9px; background:var(--bone-muted); clip-path:polygon(20% 0,0 20%,30% 50%,0 80%,20% 100%,50% 70%,80% 100%,100% 80%,70% 50%,100% 20%,80% 0,50% 30%); cursor:pointer; }
+
+    /* ── Analytics panel ────────────────────────────── */
+    .analytics-header { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:16px; flex-wrap:wrap; }
+    .analytics-title { font-family:var(--font-pixel); font-size:var(--fs-h2); color:var(--gold); text-transform:uppercase; letter-spacing:.5px; }
+    .analytics-controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .analytics-timeframe, .analytics-chart-type { background:var(--ink); border:2px solid var(--line); color:var(--bone); font-family:var(--font-mono); font-size:var(--fs-table); padding:9px 12px; cursor:pointer; }
+    .analytics-timeframe:focus, .analytics-chart-type:focus { outline:none; border-color:var(--accent); }
+    .charts-grid { display:grid; grid-template-columns:var(--chart-cols); gap:16px; }
+    .chart-card { background:var(--surface); border:2px solid var(--line); box-shadow:var(--shadow-hard); overflow:hidden; transition:transform .1s; }
+    .chart-card:hover { transform:translateY(-2px); }
+    .chart-header { display:flex; justify-content:space-between; align-items:center; padding:14px 16px; border-bottom:2px solid var(--line); background:var(--surface-elevated); }
+    .chart-title { font-family:var(--font-ui); font-weight:700; color:var(--accent); font-size:calc(var(--fs-table) + 1px); }
+    .chart-symbol { font-family:var(--font-mono); font-size:calc(var(--fs-table) - 2px); color:var(--bone-muted); margin-top:2px; }
+    .chart-price { font-family:var(--font-mono); font-size:calc(var(--fs-table) + 3px); font-weight:700; color:var(--bone); }
+    .chart-change { font-family:var(--font-mono); font-size:var(--fs-table); }
+    .chart-change.positive { color:#4ade80; }
+    .chart-change.negative { color:#f87171; }
+    .chart-yield { font-family:var(--font-mono); font-size:calc(var(--fs-table) - 1px); color:var(--gold); margin-top:4px; }
+    .chart-canvas-wrap { position:relative; height:var(--chart-h); padding:8px; }
+    .chart-canvas-wrap > div { height:100% !important; }
+
+    .txn-type { font-family:var(--font-pixel); font-size:7px; padding:3px 7px; border:1px solid var(--line); }
+    .txn-type.buy { background:var(--green-bg); color:#4ade80; border-color:var(--green); }
+    .txn-type.sell { background:var(--red-bg); color:#f87171; border-color:var(--red); }
+    .txn-type.dividend { background:#1a2b1a; color:#4ade80; border-color:var(--green); }
+    .txn-type.order { background:var(--gold-bg); color:var(--gold); border-color:var(--gold); }
+
+    /* ── Toasts ─────────────────────────────────────── */
+    .toast-container { position:fixed; bottom:18px; right:18px; z-index:3000; display:flex; flex-direction:column; gap:8px; pointer-events:none; }
+    .toast { background:var(--surface); border:2px solid var(--line); box-shadow:var(--shadow-hard); padding:12px 16px; font-family:var(--font-mono); font-size:var(--fs-table); color:var(--bone); pointer-events:auto; animation:toastIn .2s ease; max-width:340px; }
+    .toast.success { border-color:var(--green); } .toast.error { border-color:var(--red); } .toast.info { border-color:var(--gold); }
+    @keyframes toastIn { from {opacity:0; transform:translateX(100%);} to {opacity:1; transform:translateX(0);} }
+    .loading { display:flex; align-items:center; justify-content:center; gap:8px; padding:24px; color:var(--bone-muted); font-family:var(--font-pixel); font-size:8px; }
+    .spinner { width:16px; height:16px; border:2px solid var(--line); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+
+    ::-webkit-scrollbar { width:10px; height:10px; }
+    ::-webkit-scrollbar-track { background:var(--ink); }
+    ::-webkit-scrollbar-thumb { background:var(--line-2); border:2px solid var(--ink); }
+    ::-webkit-scrollbar-thumb:hover { background:var(--accent-dim); }
+    ::-webkit-scrollbar-corner { background:var(--ink); }
+
+    /* ── Detail overlay ─────────────────────────────── */
+    .detail-overlay {
+      position:fixed; top:0; left:0; right:0; bottom:0;
+      background:rgba(8,8,8,0.95); z-index:2000;
+      display:flex; align-items:center; justify-content:center; padding:20px;
+    }
+    .detail-overlay.hidden { display:none; }
+    .detail-panel { background:var(--surface); border:2px solid var(--line); box-shadow:var(--shadow-hard); width:100%; max-width:620px; max-height:90vh; overflow:auto; animation:panelIn .15s ease; }
+    .detail-header { display:flex; justify-content:space-between; align-items:center; background:var(--surface-elevated); margin:-2px -2px 14px -2px; padding:14px 18px; border-bottom:2px solid var(--line); }
+    .detail-header h2 { font-family:var(--font-pixel); font-size:calc(var(--fs-h2) + 1px); color:var(--accent); margin:0; }
+    .detail-close { font-family:var(--font-pixel); font-size:8px; padding:8px 14px; background:var(--ink); color:var(--bone); border:2px solid var(--line); cursor:pointer; transition:all .1s; text-transform:uppercase; letter-spacing:.5px; }
+    .detail-close:hover { transform:translate(-1px,-1px); box-shadow:var(--shadow-hard); }
+    .detail-content { padding:0 18px 18px; }
+    .detail-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px; }
+    .detail-item { background:var(--ink); border:1px solid var(--line); padding:12px 14px; }
+    .detail-item.full { grid-column:1 / -1; }
+    .detail-label { font-family:var(--font-pixel); font-size:7px; color:var(--bone-muted); text-transform:uppercase; letter-spacing:.5px; margin-bottom:5px; }
+    .detail-value { font-family:var(--font-mono); font-size:var(--fs-table); color:var(--bone); font-weight:600; }
+    .detail-value.positive { color:#4ade80; } .detail-value.negative { color:#f87171; } .detail-value.gold { color:var(--gold); }
+    .detail-spark { height:72px; width:100%; image-rendering:pixelated; }
+    .dividend-highlight { background:var(--green-bg); border:1px solid var(--green); padding:12px 14px; margin-top:10px; }
+    .dividend-highlight .detail-label { color:#4ade80; }
+    .ipo-item { background:var(--ink); border:1px solid var(--line); padding:12px 14px; margin-bottom:8px; }
+    .ipo-row { display:flex; justify-content:space-between; font-family:var(--font-mono); font-size:calc(var(--fs-table) - 1px); margin-bottom:5px; }
+    .ipo-name { font-family:var(--font-ui); font-weight:600; color:var(--accent); }
+    .ipo-btn { font-family:var(--font-pixel); font-size:7px; padding:6px 12px; background:var(--gold-bg); color:var(--gold); border:1px solid var(--gold); cursor:pointer; }
+    .ipo-btn:hover { background:var(--gold); color:var(--ink); }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand">
+      <img class="brand-logo" src="icons/brand-logo.png" alt="The Babylon Trust Ltd" />
+      <div class="brand-title">THE BABYLON PORTFOLIO<span>CAPITAL RIFT</span></div>
+      <div class="brand-right">
+        <button class="icon-btn" id="openTabBtn" title="Open in a full browser tab">⤢ Full Tab</button>
+      </div>
+    </div>
+
+    <div class="summary-grid" id="summaryGrid">
+      <div class="stat-card"><div class="stat-label">Portfolio Value</div><div style="display:flex;align-items:center;gap:8px;"><div class="stat-value" id="totalValue">$0.00</div><div id="totalValueProgress" style="font-family:var(--font-mono);font-size:12px;font-weight:700;display:none;"></div></div></div>
+      <div class="stat-card"><div class="stat-label">Expected Annual Div</div><div class="stat-value gold" id="expectedAnnualDiv">$0.00</div></div>
+      <div class="stat-card"><div class="stat-label">Holdings</div><div class="stat-value" id="holdingsCount">0</div></div>
+      <div class="stat-card"><div class="stat-label">Open Orders</div><div class="stat-value gold" id="ordersCount">0</div></div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="overview">Overview</button>
+      <button class="tab-btn" data-tab="holdings">Holdings</button>
+      <button class="tab-btn" data-tab="dividends">Dividends</button>
+      <button class="tab-btn" data-tab="analytics">Advanced Analytics</button>
+      <button class="tab-btn" data-tab="trade">Trade</button>
+      <button class="tab-btn" data-tab="orders">Orders</button>
+      <button class="tab-btn" data-tab="transactions">History</button>
+      <button class="tab-btn" data-tab="ipo">IPO</button>
+      <button class="tab-btn" data-tab="settings">Settings</button>
+    </div>
+  </div>
+
+  <main class="main">
+    <!-- Overview -->
+    <div class="panel active" id="panel-overview">
+      <div class="panel-header">
+        <h2>Overview</h2>
+        <div style="display:flex;gap:10px;align-items:center;">
+          <input type="search" id="overviewSearch" class="search-input" placeholder="Search company…" autocomplete="off" />
+          <select id="overviewFilter" class="filter-select">
+            <option value="value">Top Share Value</option>
+            <option value="yield">Top Yield</option>
+          </select>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th class="sortable" data-sort="name">Company</th><th class="sortable" data-sort="price">Price</th><th class="sortable" data-sort="change">Change</th><th class="sortable" data-sort="yield">Yield</th><th class="sortable" data-sort="owned">Holdings</th><th class="sortable" data-sort="value">Value</th><th class="sortable" data-sort="pct">%</th></tr></thead>
+          <tbody id="overviewBody"></tbody>
+        </table>
+      </div>
+      <div class="empty-state" id="overviewEmpty" style="display:none;"><strong>NO DATA</strong>Load listings to see overview</div>
+    </div>
+
+    <!-- Holdings -->
+    <div class="panel" id="panel-holdings">
+      <div style="margin-bottom:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <div style="font-family:var(--font-pixel);font-size:var(--fs-h2);color:var(--gold);text-transform:uppercase;letter-spacing:.5px;">Portfolio Value</div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <div id="portfolioProgress" style="font-family:var(--font-mono);font-size:12px;font-weight:700;padding:4px 10px;background:var(--surface);border:1px solid var(--line);display:none;"></div>
+            <select class="analytics-timeframe" id="portfolioChartTimeframe" style="padding:6px 10px;font-size:11px;">
+              <option value="1h">1H</option>
+              <option value="24h" selected>24H</option>
+            </select>
+          </div>
+        </div>
+        <div style="background:var(--surface);border:2px solid var(--line);box-shadow:var(--shadow-hard);height:200px;position:relative;" id="portfolioChartWrap">
+          <div id="portfolioChart" style="height:100%;"></div>
+          <div id="portfolioChartEmpty" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-family:var(--font-pixel);font-size:8px;color:var(--bone-muted);text-align:center;">NO DATA<br><span style="font-family:var(--font-mono);font-size:10px;margin-top:4px;display:block;">Own shares to see portfolio history</span></div>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;">
+        <div style="font-family:var(--font-pixel);font-size:var(--fs-h2);color:var(--gold);text-transform:uppercase;letter-spacing:.5px;">Holdings</div>
+        <input type="search" id="holdingsSearch" class="search-input" placeholder="Search company…" autocomplete="off" />
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th class="sortable" data-sort="name">Company</th><th class="sortable" data-sort="owned">Owned</th><th class="sortable" data-sort="price">Price</th><th class="sortable" data-sort="backing">Backing</th><th class="sortable" data-sort="value">Value</th><th class="sortable" data-sort="pct">%</th><th class="sortable" data-sort="yield">Yield</th><th class="sortable" data-sort="div">Div Income</th></tr></thead>
+          <tbody id="holdingsBody"></tbody>
+        </table>
+      </div>
+      <div class="empty-state" id="holdingsEmpty" style="display:none;"><strong>NO HOLDINGS</strong>Buy shares in the Trade tab</div>
+    </div>
+
+    <!-- Dividends -->
+    <div class="panel" id="panel-dividends">
+      <div id="dividendSummary" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px;"></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Company</th><th>Total Received</th><th>Per Share</th><th>Yield %</th></tr></thead>
+          <tbody id="dividendsBody"></tbody>
+          <tfoot id="dividendsFoot"></tfoot>
+        </table>
+      </div>
+      <div class="empty-state" id="dividendsEmpty" style="display:none;"><strong>NO DIVIDENDS</strong>Dividends appear when companies pay out</div>
+    </div>
+
+    <!-- Analytics -->
+    <div class="panel" id="panel-analytics">
+      <div class="analytics-header">
+        <h3 class="analytics-title">ADVANCED ANALYTICS</h3>
+        <div class="analytics-controls">
+          <select class="filter-select" id="analyticsCompanyFilter">
+            <option value="all">All Companies</option>
+            <option value="owned">Owned Only</option>
+          </select>
+          <select class="analytics-timeframe" id="analyticsTimeframe">
+            <option value="1h">1H</option>
+            <option value="24h" selected>24H</option>
+          </select>
+          <select class="analytics-chart-type" id="analyticsChartType">
+            <option value="candlestick">Candlesticks</option>
+            <option value="line">Line</option>
+            <option value="area">Area</option>
+          </select>
+          <button class="trade-btn secondary" id="analyticsRefreshBtn">Refresh</button>
+        </div>
+      </div>
+      <div class="charts-grid" id="analyticsChartsGrid"></div>
+      <div class="empty-state" id="analyticsEmpty" style="display:none;"><strong>NO DATA</strong>Select company with price history</div>
+    </div>
+
+    <!-- Trade -->
+    <div class="panel" id="panel-trade">
+      <div class="trade-panel">
+        <div class="trade-row">
+          <select class="trade-select" id="companySelect"><option value="">Select company…</option></select>
+          <input type="number" class="trade-input" id="qtyInput" placeholder="Qty" min="1" />
+          <span class="trade-price" id="tradePrice">Price: $0.00</span>
+        </div>
+        <div class="trade-row">
+          <label class="trade-price-label">Buy Price</label>
+          <input type="number" class="trade-input" id="buyPriceInput" placeholder="Auto" min="0" step="0.01" />
+          <label class="trade-price-label">Sell Price</label>
+          <input type="number" class="trade-input" id="sellPriceInput" placeholder="Auto" min="0" step="0.01" />
+        </div>
+        <div class="trade-row">
+          <button class="trade-btn buy" id="buyBtn" disabled>Buy</button>
+          <button class="trade-btn sell" id="sellBtn" disabled>Sell</button>
+          <button class="trade-btn refresh" id="refreshBtn">Refresh</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Orders -->
+    <div class="panel" id="panel-orders">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Company</th><th>Side</th><th>Price</th><th>Qty</th><th>Filled</th><th>Created</th><th>Action</th></tr></thead>
+          <tbody id="ordersBody"></tbody>
+        </table>
+      </div>
+      <div class="empty-state" id="ordersEmpty" style="display:none;"><strong>NO OPEN ORDERS</strong>Orders appear when placed</div>
+    </div>
+
+    <!-- Transactions -->
+    <div class="panel" id="panel-transactions">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Type</th><th>Company</th><th>Qty</th><th>Price</th><th>Total</th><th>Time</th></tr></thead>
+          <tbody id="transactionsBody"></tbody>
+        </table>
+      </div>
+      <div class="empty-state" id="transactionsEmpty" style="display:none;"><strong>NO TRANSACTIONS</strong><span id="transactionsEmptyHint">Trade activity will appear here</span></div>
+    </div>
+
+    <!-- IPO -->
+    <div class="panel" id="panel-ipo">
+      <div class="empty-state" id="ipoEmpty" style="display:none;"><strong>NO IPO OFFERINGS</strong>Check back for new listings</div>
+      <div id="ipoList"></div>
+    </div>
+
+  </main>
+
+  <!-- Detail Overlay -->
+  <div class="detail-overlay hidden" id="detailOverlay">
+    <div class="detail-panel" id="detailPanel">
+      <div class="detail-header">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div>
+            <h2 id="detailName"></h2>
+            <div id="detailSymbol" style="font-family:var(--font-mono);font-size:11px;color:var(--bone-muted);margin-top:3px;letter-spacing:1px;"></div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:14px;">
+          <div style="text-align:right;">
+            <div id="detailPrice" style="font-family:var(--font-mono);font-size:18px;font-weight:700;color:var(--bone);"></div>
+            <div id="detailChange" style="font-family:var(--font-mono);font-size:12px;margin-top:2px;"></div>
+          </div>
+          <button class="detail-close" id="detailClose">Close</button>
+        </div>
+      </div>
+      <div class="detail-content">
+        <div class="detail-grid" id="detailGrid"></div>
+        <canvas class="detail-spark" id="detailSpark" style="height:90px;margin-bottom:10px;"></canvas>
+        <div id="detailHoldingInfo" style="display:none;background:var(--gold-bg);border:1px solid var(--gold);padding:12px 14px;margin-bottom:10px;">
+          <div class="detail-label" style="color:var(--gold);margin-bottom:8px;">YOUR HOLDINGS</div>
+          <div id="detailHoldingContent" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;"></div>
+        </div>
+        <div class="dividend-highlight">
+          <div class="detail-label">Dividend per Share (Yield × Price)</div>
+          <div class="detail-value" id="detailDivPer">$0.00</div>
+        </div>
+        <div id="detailTradeSection" style="margin-top:14px;background:var(--surface);border:2px solid var(--line);padding:14px;">
+          <div class="detail-label" style="margin-bottom:10px;">QUICK TRADE</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+            <input type="number" id="detailQtyInput" placeholder="Qty" min="1" class="trade-input" style="width:80px;" />
+            <div style="display:flex;gap:4px;align-items:center;">
+              <label class="trade-price-label">Buy</label>
+              <input type="number" id="detailBuyPrice" placeholder="Auto" min="0" step="0.01" class="trade-input" style="width:90px;" />
+            </div>
+            <div style="display:flex;gap:4px;align-items:center;">
+              <label class="trade-price-label">Sell</label>
+              <input type="number" id="detailSellPrice" placeholder="Auto" min="0" step="0.01" class="trade-input" style="width:90px;" />
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <button class="trade-btn buy" id="detailBuyBtn" disabled style="flex:1;font-size:7px;padding:10px 14px;">Buy</button>
+            <button class="trade-btn sell" id="detailSellBtn" disabled style="flex:1;font-size:7px;padding:10px 14px;">Sell</button>
+          </div>
+          <div id="detailTradeInfo" style="font-family:var(--font-mono);font-size:10px;color:var(--bone-muted);margin-top:8px;text-align:center;"></div>
+        </div>
+        <div id="orderBookSection" style="margin-top:14px;">
+          <div class="detail-label" style="margin-bottom:8px;font-size:8px;">ORDER BOOK</div>
+          <div id="orderBookSpread" style="font-family:var(--font-mono);font-size:var(--fs-table);color:var(--gold);margin-bottom:10px;"></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <div>
+              <div class="detail-label" style="color:#4ade80;margin-bottom:4px;">BIDS (BUY)</div>
+              <div class="table-wrap" style="max-height:160px;overflow-y:auto;">
+                <table><thead><tr><th>Price</th><th>Qty</th></tr></thead><tbody id="orderBookBids"></tbody></table>
+              </div>
+            </div>
+            <div>
+              <div class="detail-label" style="color:#f87171;margin-bottom:4px;">ASKS (SELL)</div>
+              <div class="table-wrap" style="max-height:160px;overflow-y:auto;">
+                <table><thead><tr><th>Price</th><th>Qty</th></tr></thead><tbody id="orderBookAsks"></tbody></table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings -->
+  <div class="panel" id="panel-settings">
+    <div class="panel-header">
+      <h2>Settings</h2>
+    </div>
+
+    <!-- Detection Engine -->
+    <div style="background:var(--surface);border:2px solid var(--line);box-shadow:var(--shadow-hard);padding:18px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
+        <div style="width:32px;height:32px;background:var(--surface-elevated);border:2px solid var(--gold);display:flex;align-items:center;justify-content:center;font-size:16px;">🛰️</div>
+        <div>
+          <div style="font-family:var(--font-pixel);font-size:var(--fs-h2);color:var(--gold);text-transform:uppercase;letter-spacing:.5px;">Detection Engine</div>
+          <div style="font-family:var(--font-mono);font-size:11px;color:var(--bone-muted);margin-top:2px;">Live trade &amp; IPO monitor</div>
+        </div>
+      </div>
+      <div id="detectStatus" style="font-family:var(--font-mono);font-size:11px;color:var(--bone-muted);padding:10px 12px;background:var(--ink);border:2px solid var(--line);line-height:1.7;">Checking…</div>
+    </div>
+
+    <!-- Remote Access -->
+    <div style="background:var(--surface);border:2px solid var(--line);box-shadow:var(--shadow-hard);padding:18px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
+        <div style="width:32px;height:32px;background:var(--blue-bg,#0d1b2b);border:2px solid var(--blue,#3b82f6);display:flex;align-items:center;justify-content:center;font-size:16px;">📡</div>
+        <div>
+          <div style="font-family:var(--font-pixel);font-size:var(--fs-h2);color:#60a5fa;text-transform:uppercase;letter-spacing:.5px;">Remote Access</div>
+          <div style="font-family:var(--font-mono);font-size:11px;color:var(--bone-muted);margin-top:2px;">Control your portfolio from anywhere</div>
+        </div>
+      </div>
+
+      <div style="margin-bottom:12px;">
+        <label style="display:block;font-family:var(--font-pixel);font-size:7px;color:var(--bone-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Remote API URL</label>
+        <input type="text" id="remoteApiUrl" placeholder="https://your-project.vercel.app" style="width:100%;padding:10px 12px;font-family:var(--font-mono);font-size:11px;background:var(--ink);border:2px solid var(--line);color:var(--bone);" />
+        <div style="font-family:var(--font-mono);font-size:9px;color:var(--bone-muted);margin-top:4px;">Enter your deployed Vercel project URL</div>
+      </div>
+
+      <div style="margin-bottom:12px;">
+        <label style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--ink);border:2px solid var(--line);cursor:pointer;">
+          <input type="checkbox" id="remoteAccessEnabled" style="width:16px;height:16px;cursor:pointer;" />
+          <span style="flex:1;">
+            <div style="font-family:var(--font-pixel);font-size:7px;color:var(--bone);text-transform:uppercase;">Enable Remote Access</div>
+            <div style="font-family:var(--font-mono);font-size:10px;color:var(--bone-muted);margin-top:2px;">Generate a secure link to view your portfolio on any device</div>
+          </span>
+        </label>
+      </div>
+
+      <div id="remoteLinkContainer" style="display:none;">
+        <label style="display:block;font-family:var(--font-pixel);font-size:7px;color:var(--bone-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Your Remote Link</label>
+        <div style="display:flex;gap:8px;">
+          <input type="text" id="remoteLinkUrl" readonly style="flex:1;padding:10px 12px;font-family:var(--font-mono);font-size:11px;background:var(--ink);border:2px solid var(--line);color:var(--bone);" />
+          <button class="trade-btn buy" id="copyRemoteLinkBtn" style="font-size:7px;padding:10px 14px;white-space:nowrap;">Copy</button>
+        </div>
+        <div style="margin-top:10px;display:flex;gap:8px;">
+          <button class="trade-btn gold" id="openRemoteLinkBtn" style="font-size:7px;padding:10px 14px;flex:1;">Open in Browser</button>
+          <button class="trade-btn sell" id="regenerateRemoteLinkBtn" style="font-size:7px;padding:10px 14px;">Regenerate</button>
+        </div>
+      </div>
+
+      <div id="remoteStatus" style="font-family:var(--font-mono);font-size:11px;margin-top:10px;display:none;padding:8px 10px;border:2px solid var(--line);"></div>
+    </div>
+
+  </div>
+
+  <div class="toast-container" id="toastContainer"></div>
+  <script src="popup.js"></script>
+</body>
+</html>

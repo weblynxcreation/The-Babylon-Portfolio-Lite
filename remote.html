@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>The Babylon Portfolio - Remote Access</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --ink: #080808;
+      --surface: #121212;
+      --surface-elevated: #1a1a1a;
+      --bone: #f2f0e8;
+      --bone-muted: #a8a4a0;
+      --line: #232323;
+      --line-2: #2d2d2d;
+      --gold: #c9a84c;
+      --gold-bg: #2b260d;
+      --green: #2d7d2d;
+      --green-bg: #0d2b0d;
+      --red: #8b1a1a;
+      --red-bg: #2b0d0d;
+      --blue: #3b82f6;
+      --blue-bg: #0d1b2b;
+      --shadow-hard: 4px 4px 0 #000;
+      --font-pixel: 'Press Start 2P', cursive;
+      --font-mono: 'JetBrains Mono', monospace;
+      --font-ui: 'Inter', system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: var(--font-ui);
+      font-size: 14px;
+      line-height: 1.5;
+      background: var(--ink);
+      color: var(--bone);
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .container { max-width: 1200px; margin: 0 auto; }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 20px;
+      background: var(--surface);
+      border: 2px solid var(--line);
+      box-shadow: var(--shadow-hard);
+      margin-bottom: 20px;
+    }
+    .header-icon {
+      width: 48px;
+      height: 48px;
+      background: var(--gold-bg);
+      border: 2px solid var(--gold);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+    }
+    .header-title {
+      font-family: var(--font-pixel);
+      font-size: 14px;
+      color: var(--gold);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .header-subtitle {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--bone-muted);
+      margin-top: 4px;
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+    .stat-card {
+      background: var(--surface);
+      border: 2px solid var(--line);
+      box-shadow: var(--shadow-hard);
+      padding: 20px;
+    }
+    .stat-label {
+      font-family: var(--font-pixel);
+      font-size: 8px;
+      color: var(--bone-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+    .stat-value {
+      font-family: var(--font-mono);
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--bone);
+    }
+    .stat-value.gold { color: var(--gold); }
+    .stat-value.green { color: #4ade80; }
+    .section {
+      background: var(--surface);
+      border: 2px solid var(--line);
+      box-shadow: var(--shadow-hard);
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .section-icon {
+      width: 32px;
+      height: 32px;
+      background: var(--gold-bg);
+      border: 2px solid var(--gold);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+    }
+    .section-title {
+      font-family: var(--font-pixel);
+      font-size: 10px;
+      color: var(--gold);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+    th {
+      text-align: left;
+      padding: 12px;
+      background: var(--ink);
+      border: 2px solid var(--line);
+      font-family: var(--font-pixel);
+      font-size: 7px;
+      color: var(--bone-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    td {
+      padding: 12px;
+      border: 2px solid var(--line);
+      color: var(--bone);
+    }
+    tr:hover td { background: var(--surface-elevated); }
+    .company-name { font-weight: 600; color: var(--bone); }
+    .company-symbol { color: var(--bone-muted); font-size: 11px; }
+    .price-cell { color: var(--bone); }
+    .value-cell { color: var(--gold); font-weight: 600; }
+    .pct-cell { color: var(--bone-muted); }
+    .div-cell { color: var(--bone-muted); }
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: var(--bone-muted);
+      font-family: var(--font-mono);
+      font-size: 13px;
+    }
+    .loading {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--bone-muted);
+      font-family: var(--font-mono);
+      font-size: 14px;
+    }
+    .error {
+      text-align: center;
+      padding: 40px 20px;
+      color: #f87171;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      background: var(--red-bg);
+      border: 2px solid var(--red);
+    }
+    .refresh-btn {
+      font-family: var(--font-pixel);
+      font-size: 8px;
+      padding: 10px 16px;
+      background: var(--surface);
+      color: var(--bone);
+      border: 2px solid var(--line);
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .refresh-btn:hover { background: var(--surface-elevated); }
+    .refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .controls {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    @media (max-width: 768px) {
+      .stats-grid { grid-template-columns: 1fr; }
+      table { font-size: 11px; }
+      th, td { padding: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="header-icon">📡</div>
+      <div>
+        <div class="header-title">The Babylon Portfolio</div>
+        <div class="header-subtitle">Remote Access • Capital Rift</div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button class="refresh-btn" id="refreshBtn">Refresh Data</button>
+    </div>
+
+    <div id="content">
+      <div class="loading">Connecting to portfolio...</div>
+    </div>
+  </div>
+
+  <script>
+    const urlParams = new URLSearchParams(window.location.search);
+    const token = urlParams.get('token');
+
+    async function sendMessage(msg) {
+      return new Promise(resolve => {
+        chrome.runtime.sendMessage(msg, resolve);
+      });
+    }
+
+    function fmt(n) {
+      n = Number(n);
+      if (!isFinite(n)) return '—';
+      if (n >= 1e9) return '$' + (n/1e9).toFixed(2) + 'B';
+      if (n >= 1e6) return '$' + (n/1e6).toFixed(2) + 'M';
+      if (n >= 1e3) return '$' + (n/1e3).toFixed(2) + 'K';
+      return '$' + n.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+    }
+
+    function fmtNum(n) { return Number(n || 0).toLocaleString(); }
+
+    async function loadPortfolio() {
+      const content = document.getElementById('content');
+
+      if (!token) {
+        content.innerHTML = '<div class="error">Invalid or missing access token</div>';
+        return;
+      }
+
+      try {
+        content.innerHTML = '<div class="loading">Loading portfolio data...</div>';
+
+        const response = await sendMessage({ type: 'GET_PORTFOLIO_DATA', token });
+
+        if (!response || !response.success) {
+          content.innerHTML = '<div class="error">Failed to load portfolio data. Make sure the extension is installed and remote access is enabled.</div>';
+          return;
+        }
+
+        const { holdings, orders, companies } = response.data;
+
+        const totalValue = holdings.reduce((sum, h) => {
+          const company = companies.find(c => c.id === h.id);
+          return sum + (h.owned * (company?.currentPrice || 0));
+        }, 0);
+
+        let expectedAnnual = 0;
+        for (const h of holdings) {
+          expectedAnnual += h.owned * (h.currentPrice * h.yieldPct / 100);
+        }
+
+        let html = `
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-label">Total Portfolio Value</div>
+              <div class="stat-value gold">${fmt(totalValue)}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Holdings</div>
+              <div class="stat-value">${holdings.length}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Open Orders</div>
+              <div class="stat-value">${orders.length}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Expected Annual Dividends</div>
+              <div class="stat-value green">${fmt(expectedAnnual)}</div>
+            </div>
+          </div>
+        `;
+
+        if (holdings.length > 0) {
+          html += `
+            <div class="section">
+              <div class="section-header">
+                <div class="section-icon"></div>
+                <div class="section-title">Holdings</div>
+              </div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Company</th>
+                    <th>Shares</th>
+                    <th>Price</th>
+                    <th>Value</th>
+                    <th>Yield</th>
+                    <th>Dividend</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${holdings.map(h => {
+                    const value = h.owned * h.currentPrice;
+                    const divIncome = h.owned * h.currentPrice * h.yieldPct / 100;
+                    return `
+                      <tr>
+                        <td>
+                          <div class="company-name">${h.name}</div>
+                          <div class="company-symbol">${h.symbol}</div>
+                        </td>
+                        <td>${fmtNum(h.owned)}</td>
+                        <td class="price-cell">$${h.currentPrice.toLocaleString()}</td>
+                        <td class="value-cell">${fmt(value)}</td>
+                        <td>${h.yieldPct.toFixed(1)}%</td>
+                        <td class="div-cell">${fmt(divIncome)}</td>
+                      </tr>
+                    `;
+                  }).join('')}
+                </tbody>
+              </table>
+            </div>
+          `;
+        } else {
+          html += '<div class="section"><div class="empty-state">No holdings found</div></div>';
+        }
+
+        if (orders.length > 0) {
+          html += `
+            <div class="section">
+              <div class="section-header">
+                <div class="section-icon" style="background:var(--blue-bg);border-color:var(--blue);">📋</div>
+                <div class="section-title" style="color:var(--blue);">Open Orders</div>
+              </div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Company</th>
+                    <th>Side</th>
+                    <th>Quantity</th>
+                    <th>Price</th>
+                    <th>Filled</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${orders.map(o => `
+                    <tr>
+                      <td>
+                        <div class="company-name">${o.name || o.companyName || 'N/A'}</div>
+                      </td>
+                      <td>${(o.side || '').toUpperCase()}</td>
+                      <td>${fmtNum(o.qty)}</td>
+                      <td class="price-cell">$${Number(o.price || 0).toLocaleString()}</td>
+                      <td>${fmtNum(o.filled)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          `;
+        }
+
+        content.innerHTML = html;
+      } catch (err) {
+        console.error('Error loading portfolio:', err);
+        content.innerHTML = `<div class="error">Error: ${err.message}</div>`;
+      }
+    }
+
+    document.getElementById('refreshBtn').addEventListener('click', loadPortfolio);
+
+    loadPortfolio();
+  </script>
+</body>
+</html>
