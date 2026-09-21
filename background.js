@@ -1303,6 +1303,12 @@ async function recordDividend(companyId, amtPerShare, sharesOwned){
   await persistAll();
   return {success:true};
 }
+// Last fetched portfolio, kept so the popup's GET_PORTFOLIO right behind a
+// poll tick (or the game-tab heartbeat) is served from memory instead of
+// hitting the game API a second time within the same few seconds.
+let lastPortfolioResult = null; // { at, data }
+const PORTFOLIO_FRESH_MS = 10000;
+
 async function getPortfolioData(){
   const api = await fetchApi();
   // IPO fetch is non-fatal: a flaky /ipo/offerings must not kill the whole poll.
@@ -1315,7 +1321,7 @@ async function getPortfolioData(){
   await queueDetection(api, companies, ipoOfferings);
   const {holdings, totalValue} = buildPortfolio(companies, api.holdings||[]);
   const {dividends, totalDividends} = calculateDividends(bank.all, companies);
-  return {
+  const data = {
     companies,
     holdings,
     totalValue,
@@ -1329,6 +1335,8 @@ async function getPortfolioData(){
     bankTransactions: bank.all || [],
     dividendTransactions: bank.dividends || []
   };
+  lastPortfolioResult = { at: Date.now(), data };
+  return data;
 }
 async function syncToRemote(payload) {
   try {
@@ -1377,9 +1385,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       await ensureStorageReady();
       switch (msg.type) {
         case 'GET_PORTFOLIO':
-          { const data = await getPortfolioData();
-          syncToRemote(data).catch(() => {});
-          sendResponse({success:true, data}); }
+          { // A poll that landed seconds ago already fetched and diffed
+            // everything — reuse it unless the caller forces a fresh fetch.
+            const cached = !msg.force && lastPortfolioResult && (Date.now() - lastPortfolioResult.at < PORTFOLIO_FRESH_MS);
+            const data = cached ? lastPortfolioResult.data : await getPortfolioData();
+            if (!cached) syncToRemote(data).catch(() => {});
+            // rawApi and the raw bank feeds are never read by the popup;
+            // omitting them keeps a multi-hundred-KB structured clone off
+            // every 30s tick.
+            const { rawApi, bankTransactions, dividendTransactions, ...popupData } = data;
+            sendResponse({success:true, data: popupData}); }
           break;
         case 'GET_PORTFOLIO_DATA':
           const remoteSettings = await chrome.storage.local.get(['remoteAccessEnabled', 'remoteToken']);

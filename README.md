@@ -13,7 +13,7 @@ A read-only Chrome extension for tracking your Capital Rift stock portfolio, wit
 ### Portfolio Management
 - **Real-time Portfolio Value** - Track your total holdings value with 24h progress indicators
 - **Holdings Overview** - View all owned shares with current prices and yields
-- **Dividend Tracking** - Monitor expected annual dividends from your portfolio
+- **Dividend Tracking** - Monitor expected annual dividends from your portfolio, with totals and a per-company breakdown on the Dividends tab
 - **Portfolio Value Chart** - Visualize portfolio performance over time (1H, 24H timeframes)
 - **Search & Filter** - Quickly find any company in the Overview and Holdings tables
 
@@ -37,6 +37,17 @@ A read-only Chrome extension for tracking your Capital Rift stock portfolio, wit
 - **Market Overview** - Sortable table of all available companies
 - **Market Analysis** - Scan the whole item exchange and list every commodity with its price, 24h change, base price, spread, NPC quotes, best bid/ask, book depth, trend and volume
 - **Filter Options** - Sort by value, yield, price, and more
+
+### Economy Dashboard
+- **World Economy** - Game-day macro stats, cash supply, and live commodity quotes
+- **Income Engine** - Every income rate that feeds your daily cash flow
+- **Cash Flow Chart** - Daily inflow vs outflow over time
+- **Income Sources** - Ranked list of where your money comes from
+- **Payroll & Costs** - What leaves your account each day
+- **Bank Accounts** - Balances and recent account activity (read-only — transfers happen in the game)
+- **Companies & Equity** - Your stake in every company you own
+- **Leaderboards** - Wealth and loyalty boards
+- **Market Pulse** - Scan breadth with top gainers and losers
 
 ### UI/UX
 - **Retro 8-bit Design** - Quest Trade-inspired pixel art aesthetic
@@ -227,6 +238,10 @@ Real-time portfolio summary with sortable company table
 Track your holdings with interactive portfolio value chart
 ![Holdings Tab](screenshots/holdings-tab.png)
 
+### Dividends
+Dividend totals, expected annual income, and per-company breakdown
+![Dividends Tab](screenshots/dividends-tab.png)
+
 ### Advanced Analytics
 Sector map with the stock market overview cards and per-sector breakdown beneath it
 ![Advanced Analytics](screenshots/advanced-analytics.png)
@@ -242,6 +257,26 @@ Deep dive into individual companies with order book, spark line and dividend his
 ### Market Analysis
 Full exchange scan with every commodity's price, 24h change, base price, spread, NPC quotes, best bid/ask, book depth, trend and volume
 ![Market Analysis](screenshots/market-analysis.png)
+
+### History Tab
+Complete log of the trades, orders and IPO bids detected on your account
+![History Tab](screenshots/history-tab.png)
+
+### Economy - World & Quotes
+Game-day macro stats, cash supply, and commodity quotes
+![Economy Tab](screenshots/economy-tab.png)
+
+### Economy - Rates, Cash Flow & Sources
+Income engine rates, daily inflow/outflow chart, and ranked income sources
+![Economy Flow](screenshots/economy-flow.png)
+
+### Economy - Bank & Equity
+Bank accounts, recent activity, and your equity per company (read-only)
+![Economy Bank](screenshots/economy-bank.png)
+
+### Economy - Leaderboards & Market Pulse
+Wealth and loyalty boards plus scan breadth with top gainers and losers
+![Economy Pulse](screenshots/economy-pulse.png)
 
 ## Known Limitations
 

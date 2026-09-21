@@ -143,6 +143,7 @@
   let portfolioChartInstance = null; // {chart, series}
   let lwLoaded = false;
   let lastLoadSignature = null; // JSON of the last rendered payload; identical payload skips the render pass
+  let lastLoadAt = 0; // epoch ms of the last successful GET_PORTFOLIO response
   let chartsSignature = '';     // structure key of the charts currently drawn in the analytics grid
   let chartBuildGeneration = 0; // bumped to abandon an in-flight progressive chart build
   let chartBuild = null;        // {generation, sig, list, chartType} while charts stream in
@@ -317,35 +318,24 @@
   }
 
   // Click handler for company rows - open detail
-  function attachRowClick() {
-    // Overview rows - open detail
-    els.overviewBody.querySelectorAll('tr').forEach(row => {
-      row.style.cursor = 'pointer';
-      row.addEventListener('click', () => {
-        const cid = row.dataset.companyId;
-        const c = currentCompanies.find(x => x.id === cid);
-        if (c) openDetail(c);
-      });
-    });
-    // Holdings rows
-    els.holdingsBody.querySelectorAll('tr').forEach(row => {
-      row.style.cursor = 'pointer';
-      row.addEventListener('click', () => {
-        const name = row.querySelector('.company-name')?.textContent;
-        const c = currentCompanies.find(x => x.name === name);
-        if (c) openDetail(c);
-      });
-    });
-    // Dividends rows
-    els.dividendsBody.querySelectorAll('tr').forEach(row => {
-      row.style.cursor = 'pointer';
-      row.addEventListener('click', () => {
-        const name = row.querySelector('.company-name')?.textContent;
-        const c = currentCompanies.find(x => x.name === name);
-        if (c) openDetail(c);
-      });
-    });
+  // Row clicks are delegated from the tbody containers, which persist across
+  // renders. The old attachRowClick() re-bound every row after each of the
+  // three table renders per load, stacking up to three listeners on the same
+  // row — one click then opened the detail overlay (and its order-book fetch)
+  // three times.
+  function rowClickHandler(e) {
+    const row = e.target.closest('tr');
+    if (!row || !row.dataset) return;
+    const c = row.dataset.companyId
+      ? currentCompanies.find(x => x.id === row.dataset.companyId)
+      : currentCompanies.find(x => x.name === row.querySelector('.company-name')?.textContent);
+    if (c) openDetail(c);
   }
+  [els.overviewBody, els.holdingsBody, els.dividendsBody].forEach(tb => {
+    if (!tb) return;
+    tb.style.cursor = 'pointer';
+    tb.addEventListener('click', rowClickHandler);
+  });
 
   // Attach click on analytics chart cards (called after charts render)
   function attachChartClicks() {
@@ -361,12 +351,12 @@
 
   // Render Overview (all companies with key metrics)
   function renderOverview(companies, holdings) {
-    const held = new Set(holdings.map(h => h.id));
+    const heldById = new Map(holdings.map(h => [h.id, h]));
     resetEmpty(els.overviewEmpty);
     if (!companies.length) { els.overviewBody.innerHTML = ''; els.overviewEmpty.style.display = 'block'; return; }
     els.overviewEmpty.style.display = 'none';
     els.overviewBody.innerHTML = companies.map((c, i) => {
-      const h = holdings.find(x => x.id === c.id);
+      const h = heldById.get(c.id);
       const changeClass = c.changePct >= 0 ? 'positive' : 'negative';
       const marketCap = c.currentPrice * c.sharesOutstanding;
       const holdingValue = h ? h.value : 0;
@@ -380,7 +370,6 @@
         <td class="pct-cell">${h ? fmtPct(h.percentage) : '—'}</td>
       </tr>`;
     }).join('');
-    attachRowClick();
     restoreOverviewSort();
     restoreOverviewFilter();
     applySearch(els.overviewBody, els.overviewEmpty, overviewSearchTerm);
@@ -517,7 +506,6 @@
       <td class="div-cell">${fmt(h.dividendIncome)} (${fmt(divPerShare)}/share)</td>
     </tr>`;
     }).join('');
-    attachRowClick();
     restoreHoldingsSort();
     applySearch(els.holdingsBody, els.holdingsEmpty, holdingsSearchTerm);
     renderPortfolioChart();
@@ -562,26 +550,22 @@
     const tfHours = { '1h': 1, '24h': 24, '7d': 168, '30d': 720 };
     const maxPoints = tfHours[tf] || 720;
 
-    console.log('[Babylon] Portfolio chart: timeframe=', tf, 'maxPoints=', maxPoints, 'holdings=', currentHoldings.length);
-
-    // Build portfolio value history from holdings + spark data
+    // Build portfolio value history from holdings + spark data. Times are
+    // anchored to the current hour (like the analytics charts) so the series
+    // is stable within an hour and a refresh can call setData in place — or
+    // skip entirely when nothing moved — instead of recreating the chart on
+    // every 30s poll.
+    const companyById = new Map(currentCompanies.map(c => [c.id, c]));
     const portfolioHistory = {};
     for (const h of currentHoldings) {
-      const company = currentCompanies.find(c => c.id === h.id);
-      if (!company || !company.spark || company.spark.length < 2) {
-        console.log('[Babylon] Portfolio chart: skipping', h.name, 'no spark data');
-        continue;
-      }
-      
+      const company = companyById.get(h.id);
+      if (!company || !company.spark || company.spark.length < 2) continue;
       const spark = company.spark.length > maxPoints ? company.spark.slice(-maxPoints) : company.spark;
-      console.log('[Babylon] Portfolio chart:', h.name, 'spark length=', spark.length, 'owned=', h.owned);
-      const now = Date.now();
-      
+      const anchor = Math.floor(Date.now() / 3600000) * 3600;
       for (let i = 0; i < spark.length; i++) {
-        const time = Math.floor((now - (spark.length - 1 - i) * 3600 * 1000) / 1000);
+        const time = anchor - (spark.length - 1 - i) * 3600;
         const value = h.owned * spark[i];
-        if (!portfolioHistory[time]) portfolioHistory[time] = 0;
-        portfolioHistory[time] += value;
+        portfolioHistory[time] = (portfolioHistory[time] || 0) + value;
       }
     }
 
@@ -589,10 +573,7 @@
       .map(([time, value]) => ({ time: parseInt(time), value }))
       .sort((a, b) => a.time - b.time);
 
-    console.log('[Babylon] Portfolio chart: aggregated data points=', data.length);
-
     if (!data.length) {
-      console.log('[Babylon] Portfolio chart: no spark data available for holdings');
       if (els.portfolioChartEmpty) els.portfolioChartEmpty.style.display = 'block';
       if (els.portfolioProgress) els.portfolioProgress.style.display = 'none';
       if (portfolioChartInstance) {
@@ -602,47 +583,59 @@
       return;
     }
 
-    // Clear existing chart
-    if (portfolioChartInstance) {
-      portfolioChartInstance.chart.remove();
-      portfolioChartInstance = null;
-    }
+    const dataSig = tf + '|' + data.map(d => d.time + ':' + d.value).join(',');
+    if (portfolioChartInstance && portfolioChartInstance.dataSig === dataSig) return;
+
+    const progressHtml = (() => {
+      if (data.length < 2) return null;
+      const startValue = data[0].value;
+      const endValue = data[data.length - 1].value;
+      const changePct = ((endValue - startValue) / startValue) * 100;
+      return { positive: changePct >= 0, text: `${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}%` };
+    })();
 
     try {
-      const chart = LightweightCharts.createChart(els.portfolioChart, {
-        layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#a8a4a0', fontSize: 10 },
-        grid: { vertLines: { color: '#232323' }, horzLines: { color: '#232323' } },
-        rightPriceScale: { borderColor: '#232323', scaleMargins: { top: 0.1, bottom: 0.1 } },
-        timeScale: { borderColor: '#232323', timeVisible: true, secondsVisible: false },
-        crosshair: { mode: 0 },
-      });
+      if (portfolioChartInstance) {
+        portfolioChartInstance.series.setData(data);
+        const spanKey = `${data[0].time}|${data[data.length - 1].time}`;
+        if (spanKey !== portfolioChartInstance.spanKey) {
+          portfolioChartInstance.spanKey = spanKey;
+          portfolioChartInstance.chart.timeScale().fitContent();
+        }
+        portfolioChartInstance.dataSig = dataSig;
+      } else {
+        const chart = LightweightCharts.createChart(els.portfolioChart, {
+          layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#a8a4a0', fontSize: 10 },
+          grid: { vertLines: { color: '#232323' }, horzLines: { color: '#232323' } },
+          rightPriceScale: { borderColor: '#232323', scaleMargins: { top: 0.1, bottom: 0.1 } },
+          timeScale: { borderColor: '#232323', timeVisible: true, secondsVisible: false },
+          crosshair: { mode: 0 },
+        });
 
-      const series = chart.addAreaSeries({
-        topColor: 'rgba(201, 168, 76, 0.4)',
-        bottomColor: 'rgba(201, 168, 76, 0.0)',
-        lineColor: '#c9a84c',
-        lineWidth: 2,
-        priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
-      });
+        const series = chart.addAreaSeries({
+          topColor: 'rgba(201, 168, 76, 0.4)',
+          bottomColor: 'rgba(201, 168, 76, 0.0)',
+          lineColor: '#c9a84c',
+          lineWidth: 2,
+          priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        });
 
-      series.setData(data);
-      chart.timeScale().fitContent();
+        series.setData(data);
+        chart.timeScale().fitContent();
 
-      portfolioChartInstance = { chart, series };
-      console.log('[Babylon] Portfolio chart created with', data.length, 'data points');
+        portfolioChartInstance = { chart, series, dataSig, spanKey: `${data[0].time}|${data[data.length - 1].time}` };
+      }
 
       // Calculate and display progress indicator
-      if (els.portfolioProgress && data.length >= 2) {
-        const startValue = data[0].value;
-        const endValue = data[data.length - 1].value;
-        const change = endValue - startValue;
-        const changePct = (change / startValue) * 100;
-        const isPositive = change >= 0;
-        
-        els.portfolioProgress.style.display = 'block';
-        els.portfolioProgress.style.color = isPositive ? '#4ade80' : '#f87171';
-        els.portfolioProgress.style.borderColor = isPositive ? 'var(--green)' : 'var(--red)';
-        els.portfolioProgress.textContent = `${isPositive ? '+' : ''}${changePct.toFixed(2)}%`;
+      if (els.portfolioProgress) {
+        if (progressHtml) {
+          els.portfolioProgress.style.display = 'block';
+          els.portfolioProgress.style.color = progressHtml.positive ? '#4ade80' : '#f87171';
+          els.portfolioProgress.style.borderColor = progressHtml.positive ? 'var(--green)' : 'var(--red)';
+          els.portfolioProgress.textContent = progressHtml.text;
+        } else {
+          els.portfolioProgress.style.display = 'none';
+        }
       }
     } catch (e) {
       console.error('[Babylon] Portfolio chart error:', e);
@@ -667,8 +660,9 @@
         <div class="div-summary-card"><div class="detail-label">COMPANIES PAYING</div><div class="detail-value">${Object.keys(dividends).filter(k => dividends[k] > 0).length}</div></div>
       `;
     }
+    const companyById = new Map(companies.map(c => [c.id, c]));
     const rows = Object.entries(dividends).map(([cid, total]) => {
-      const c = companies.find(x => x.id === cid);
+      const c = companyById.get(cid);
       if (!c) return '';
       const divPerShare = c.currentPrice * c.yieldPct / 100;
       return `<tr>
@@ -686,7 +680,6 @@
         divFoot.innerHTML = `<tr><td>TOTAL</td><td>${fmt(totalDividends || 0)}</td><td></td><td></td></tr>`;
       }
     }
-    attachRowClick();
   }
 
   /* ── Sector Map ────────────────────────────────────────────────────
@@ -711,6 +704,9 @@
   SECTOR_DEFS.forEach(s => { s.re = new RegExp(`\\b(${s.kw.join('|')})`); });
   // Last set handed to the map, so a resize can re-lay the treemap without a full reload.
   let lastSectorCompanies = [];
+  // Last tile HTML actually written, so a poll that moved nothing skips the
+  // ~100-element parse + layout entirely.
+  let lastSectorHtml = null;
 
   function sectorOf(c) {
     const hay = `${c.name || ''} ${c.symbol || ''}`.toLowerCase();
@@ -796,7 +792,7 @@
     }
 
     const W = map.clientWidth, H = map.clientHeight;
-    if (!items.length || W < 40 || H < 40) { map.innerHTML = ''; return; }
+    if (!items.length || W < 40 || H < 40) { map.innerHTML = ''; lastSectorHtml = ''; return; }
 
     const owned = new Set((currentHoldings || []).map(h => h.id));
     const cells = squarify(items.map(i => ({ weight: i.cap > 0 ? i.cap : 1, e: i })), 0, 0, W, H);
@@ -818,19 +814,29 @@
         <span class="sector-tile-chg ${chg >= 0 ? 'up' : 'down'}">${chg >= 0 ? '▲ +' : '▼ '}${chg.toFixed(1)}%</span>
       </div>`;
     });
+    if (html === lastSectorHtml) return;
+    lastSectorHtml = html;
     map.innerHTML = html;
-    map.querySelectorAll('.sector-tile').forEach(t => {
-      t.addEventListener('click', () => {
-        const c = currentCompanies.find(x => String(x.id) === t.dataset.id);
-        if (c) openDetail(c);
-      });
+  }
+  // Tile clicks are delegated from the map container (which persists across
+  // rebuilds), so a re-lay never has to re-bind a listener per tile.
+  if (els.sectorMap) {
+    els.sectorMap.addEventListener('click', e => {
+      const t = e.target.closest('.sector-tile');
+      if (!t) return;
+      const c = currentCompanies.find(x => String(x.id) === t.dataset.id);
+      if (c) openDetail(c);
     });
   }
 
   /* ── Stock Market Info ─────────────────────────────────────────────
      Whole-market aggregates shown under the sector map, always computed
      over every listed company regardless of the chart filter: totals,
-     the player's share of market cap, breadth, and a per-sector table. */
+     the player's share of market cap, breadth, and a per-sector table.
+     Both blocks are diffed against the last write — the 30s poll must not
+     re-parse identical cards/rows while the tab sits open. */
+  let lastMarketStatsHtml = null;
+  let lastSectorTableHtml = null;
   function renderMarketStats() {
     if (!els.marketStats || !els.marketStatsSection) return;
     const companies = (currentCompanies || []).filter(c => sectorCap(c) > 0 || Number(c.currentPrice) > 0);
@@ -839,6 +845,8 @@
       els.marketStats.innerHTML = '';
       if (els.marketSectorTable) els.marketSectorTable.innerHTML = '';
       if (els.marketStatsNote) els.marketStatsNote.textContent = '';
+      lastMarketStatsHtml = '';
+      lastSectorTableHtml = '';
       return;
     }
     els.marketStatsSection.style.display = '';
@@ -898,9 +906,13 @@
       [`Top Gainer · ${topGainer.name}`, `+${topGainer.chg.toFixed(2)}%`, 'positive'],
       [`Top Loser · ${topLoser.name}`, `${topLoser.chg.toFixed(2)}%`, 'negative']
     ];
-    els.marketStats.innerHTML = cards.map(([label, value, cls]) =>
+    const statsHtml = cards.map(([label, value, cls]) =>
       `<div class="stat-card" title="${escapeText(label)}"><div class="stat-label">${escapeText(label)}</div><div class="stat-value ${cls}">${value}</div></div>`
     ).join('');
+    if (statsHtml !== lastMarketStatsHtml) {
+      lastMarketStatsHtml = statsHtml;
+      els.marketStats.innerHTML = statsHtml;
+    }
 
     if (els.marketSectorTable) {
       const sectors = [...sectorAgg.values()].sort((a, b) => b.cap - a.cap);
@@ -912,7 +924,7 @@
         <span class="num${you !== '—' ? ' you' : ''}">${you}</span>
         <span class="num${you !== '—' ? ' you' : ''}">${stake}</span>
       </div>`;
-      els.marketSectorTable.innerHTML =
+      const tableHtml =
         row('Sector', 'Cos', 'Market Cap', 'Share', 'Your Value', 'Your Stake', ' market-sector-head-row') +
         sectors.map(s => row(
           `<span class="sec-swatch" style="background:${s.def.color};"></span>${escapeText(s.def.label)}`,
@@ -924,6 +936,10 @@
           ''
         )).join('') +
         row('<span class="sec-swatch" style="background:var(--gold);"></span>TOTAL', fmtNum(companies.length), fmt(totalCap), '100.0%', fmt(ownedValue), fmtShare(ownShare), ' market-sector-total-row');
+      if (tableHtml !== lastSectorTableHtml) {
+        lastSectorTableHtml = tableHtml;
+        els.marketSectorTable.innerHTML = tableHtml;
+      }
     }
     if (els.marketStatsNote) {
       els.marketStatsNote.textContent = 'Market totals cover every listed company, independent of the chart filter · your stake = portfolio value at current prices ÷ total market cap';
@@ -1047,15 +1063,26 @@
     step();
   }
 
+  let lwScriptPromise = null;
   function loadLightweightCharts() {
-    return new Promise((resolve, reject) => {
-      const script = document.createElement('script');
-      script.src = chrome.runtime.getURL('lib/lightweight-charts.standalone.production.js');
-      script.onload = () => { console.log('[Babylon] Lightweight Charts loaded'); resolve(); };
-      script.onerror = () => reject(new Error('Failed to load Lightweight Charts'));
-      document.head.appendChild(script);
-    });
+    if (!lwScriptPromise) {
+      lwScriptPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = chrome.runtime.getURL('lib/lightweight-charts.standalone.production.js');
+        script.onload = () => { console.log('[Babylon] Lightweight Charts loaded'); resolve(); };
+        script.onerror = () => reject(new Error('Failed to load Lightweight Charts'));
+        document.head.appendChild(script);
+      });
+    }
+    return lwScriptPromise;
   }
+
+  // Parse the charts library during idle time after first paint: opening the
+  // Advanced Analytics or Holdings tab later then only pays chart-creation
+  // cost, not a ~450KB parse on the click.
+  setTimeout(() => {
+    if (!lwLoaded) loadLightweightCharts().then(() => { lwLoaded = true; }).catch(() => {});
+  }, 1500);
 
   // Stable pseudo-random in [0,1) seeded by a string: synthesized candle wicks
   // stay identical between refreshes so in-place updates don't shimmer.
@@ -1094,20 +1121,20 @@
     return data;
   }
 
+  // What the series would be built from: chart shape, timeframe, the hour
+  // anchor, and the spark itself. Unchanged → the canvas is left alone, so a
+  // poll where nothing moved costs no chart redraws at all.
+  function chartDataSig(company) {
+    const chartType = els.analyticsChartType?.value || 'candlestick';
+    const tf = els.analyticsTimeframe?.value || '24h';
+    return `${chartType}|${tf}|${Math.floor(Date.now() / 3600000)}|${(company.spark || []).join(',')}`;
+  }
+
   // In-place refresh of an existing chart card: same structure, new numbers.
   function refreshChartCard(company) {
     const inst = chartInstances[company.id];
     if (!inst) return;
     try {
-      const data = buildChartSeriesData(company);
-      inst.series.setData(data);
-      const spanKey = data.length ? `${data[0].time}|${data[data.length - 1].time}` : '';
-      // Only refit when the time window itself shifted (hour rollover, new
-      // point); otherwise the user's zoom/pan survives the refresh.
-      if (spanKey !== inst.spanKey) {
-        inst.spanKey = spanKey;
-        inst.chart.timeScale().fitContent();
-      }
       const priceEl = document.getElementById(`price-${company.id}`);
       if (priceEl) priceEl.textContent = '$' + company.currentPrice.toLocaleString();
       const changeEl = document.getElementById(`change-${company.id}`);
@@ -1117,6 +1144,19 @@
       }
       const yieldEl = document.getElementById(`yield-${company.id}`);
       if (yieldEl) yieldEl.textContent = `Yield: ${company.yieldPct.toFixed(2)}%`;
+
+      const sig = chartDataSig(company);
+      if (sig === inst.dataSig) return;
+      inst.dataSig = sig;
+      const data = buildChartSeriesData(company);
+      inst.series.setData(data);
+      const spanKey = data.length ? `${data[0].time}|${data[data.length - 1].time}` : '';
+      // Only refit when the time window itself shifted (hour rollover, new
+      // point); otherwise the user's zoom/pan survives the refresh.
+      if (spanKey !== inst.spanKey) {
+        inst.spanKey = spanKey;
+        inst.chart.timeScale().fitContent();
+      }
     } catch (e) {
       console.error('[Babylon] Chart update error for', company.name, e);
     }
@@ -1193,9 +1233,7 @@
       series.setData(data);
       chart.timeScale().fitContent();
 
-      chartInstances[company.id] = {chart, series, card, chartContainer, spanKey: data.length ? `${data[0].time}|${data[data.length - 1].time}` : ''};
-      
-      console.log('[Babylon] Chart created for', company.name, 'type:', chartType);
+      chartInstances[company.id] = {chart, series, card, chartContainer, dataSig: chartDataSig(company), spanKey: data.length ? `${data[0].time}|${data[data.length - 1].time}` : ''};
     } catch (e) {
       console.error('[Babylon] Chart error for', company.name, e);
     }
@@ -1235,8 +1273,9 @@
       return;
     }
     els.transactionsEmpty.style.display = 'none';
+    const companyById = new Map(currentCompanies.map(c => [c.id, c]));
     els.transactionsBody.innerHTML = txns.slice().reverse().map(t => {
-      const c = currentCompanies.find(x => x.id === t.companyId);
+      const c = companyById.get(t.companyId);
       const name = c ? c.name : (t.name || t.companyId || t.listingId || '—');
       const qty = t.qty != null ? t.qty : t.quantity;
       const price = t.price != null ? `$${Number(t.price).toLocaleString()}` : '—';
@@ -1293,11 +1332,12 @@
 
     // Calculate 24h portfolio value change
     if (els.totalValueProgress && Array.isArray(holdings) && holdings.length > 0) {
+      const companyById = new Map(currentCompanies.map(c => [c.id, c]));
       const portfolioHistory = {};
       const maxPoints = 24; // 24 hours
       
       for (const h of holdings) {
-        const company = currentCompanies.find(c => c.id === h.id);
+        const company = companyById.get(h.id);
         if (!company || !company.spark || company.spark.length < 2) continue;
         
         const spark = company.spark.length > maxPoints ? company.spark.slice(-maxPoints) : company.spark;
@@ -1336,31 +1376,83 @@
   // Load all data. The background broadcasts PORTFOLIO_UPDATED on a 30s tick
   // (and again on the game tab's heartbeat), so an unchanged payload skips the
   // whole render pass — re-rendering identical data is pure churn.
-  async function loadData(opts = {}) {
+  let loadInFlight = null;
+  function loadData(opts) {
+    // One fetch at a time: a tab click racing the open-time load (or the tick)
+    // must not fire a second three-request fetch storm at the game API. A
+    // forced load (Refresh button, post-trade) chains behind an in-flight one
+    // so it still gets its own fresh fetch.
+    const force = !!(opts && opts.force);
+    if (!loadInFlight) {
+      loadInFlight = loadDataNow(force).finally(() => { loadInFlight = null; });
+    } else if (force) {
+      const run = () => loadDataNow(true);
+      loadInFlight = loadInFlight.then(run, run).finally(() => { loadInFlight = null; });
+    }
+    return loadInFlight;
+  }
+
+  // Only the visible tab is rendered per load; the rest are marked dirty and
+  // rendered from the cached payload when their tab is opened. Rebuilding all
+  // seven data panels every 30s — six of them hidden — was most of the
+  // periodic jank.
+  const DATA_TABS = ['overview', 'holdings', 'dividends', 'analytics', 'orders', 'transactions', 'ipo'];
+  const dirtyTabs = new Set();
+  let lastData = null;
+  function activeTabId() {
+    return document.querySelector('.tab-btn.active')?.dataset.tab || 'overview';
+  }
+  function renderTab(tab) {
+    if (!lastData) return;
+    const { companies, holdings, totalValue, dividends, totalDividends, transactions, orders, ipoOfferings } = lastData;
+    switch (tab) {
+      case 'overview': renderOverview(companies, holdings); break;
+      case 'holdings': renderHoldings(holdings); break;
+      case 'dividends': renderDividends(companies, dividends, totalDividends, holdings); break;
+      case 'analytics': renderAnalytics(companies); break;
+      case 'orders': renderOrders(orders); break;
+      case 'transactions': renderTransactions(transactions); break;
+      case 'ipo': renderIpo(ipoOfferings); break;
+    }
+    dirtyTabs.delete(tab);
+  }
+  function renderVisiblePanels() {
+    const tab = activeTabId();
+    DATA_TABS.forEach(t => { if (t !== tab) dirtyTabs.add(t); });
+    if (DATA_TABS.includes(tab)) renderTab(tab);
+  }
+
+  async function loadDataNow(force) {
     try {
-      const resp = await sendMessage({ type: 'GET_PORTFOLIO' });
+      const resp = await sendMessage({ type: 'GET_PORTFOLIO', force: !!force });
       if (!resp.success) { showToast('Load failed: ' + resp.error, 'error'); return; }
       const data = resp.data;
-      const sig = JSON.stringify(data);
-      if (!opts.force && sig === lastLoadSignature) return;
+      lastLoadAt = Date.now();
+      const { companies, holdings, totalValue, dividends, totalDividends, transactions, orders, ipoOfferings } = data;
+      // Signature covers only what the popup renders — the payload used to be
+      // stringified whole, including the raw API dump, on every tick.
+      const sig = JSON.stringify([companies, holdings, totalValue, dividends, totalDividends, transactions, orders, ipoOfferings]);
+      if (sig === lastLoadSignature) return;
       lastLoadSignature = sig;
-      const { companies, holdings, totalValue, dividends, totalDividends, transactions, orders, ipoOfferings, bankTransactions, dividendTransactions } = data;
-      currentTransactions = transactions || [];
+      lastData = {
+        companies, holdings, totalValue, dividends, totalDividends,
+        transactions: transactions || [], orders: orders || [], ipoOfferings: ipoOfferings || []
+      };
+      // State reads happen from every panel (sector map owned-set, detail
+      // overlay, market stats), so they update even while a tab is hidden.
+      currentTransactions = lastData.transactions;
+      currentHoldings = holdings;
+      currentOrders = lastData.orders;
+      currentIpoOfferings = lastData.ipoOfferings;
       populateCompanies(companies);
-      renderOverview(companies, holdings);
-      renderHoldings(holdings);
-      renderDividends(companies, dividends, totalDividends, holdings);
-      renderAnalytics(companies);
-      renderOrders(orders);
-      renderTransactions(transactions);
-      renderIpo(ipoOfferings || []);
-      renderSummary(totalValue, holdings, orders.length);
+      renderSummary(totalValue, holdings, lastData.orders.length);
+      renderVisiblePanels();
     } catch (e) { console.error(e); showToast('Load error: ' + e.message, 'error'); }
   }
 
   els.refreshBtn.addEventListener('click', async () => {
     els.refreshBtn.disabled = true; els.refreshBtn.textContent = 'Loading…';
-    await loadData();
+    await loadData({ force: true });
     els.refreshBtn.disabled = false; els.refreshBtn.textContent = 'Refresh';
     showToast('Refreshed', 'info');
   });
@@ -1370,7 +1462,7 @@
   els.analyticsRefreshBtn.addEventListener('click', async () => {
     els.analyticsRefreshBtn.disabled = true;
     els.analyticsRefreshBtn.textContent = 'Loading…';
-    await loadData();
+    await loadData({ force: true });
     els.analyticsRefreshBtn.disabled = false;
     els.analyticsRefreshBtn.textContent = 'Refresh';
     showToast('Analytics refreshed', 'info');
@@ -1474,10 +1566,17 @@
   // Tab switch handler for analytics
   els.tabBtns.forEach(btn => {
     btn.addEventListener('click', () => {
+      // Panels skipped while hidden render from the cached payload on open.
+      if (dirtyTabs.has(btn.dataset.tab)) renderTab(btn.dataset.tab);
       if (btn.dataset.tab === 'analytics') {
-        // Charts only build while the panel is active, so force the render pass
-        // even when the payload is unchanged.
-        setTimeout(() => loadData({ force: true }), 50);
+        // Render straight from cached data so the panel is never blank while a
+        // fetch round-trips; refetch only when the last load is stale — the 30s
+        // tick and its broadcast keep the payload fresh, and every
+        // GET_PORTFOLIO costs three live game-API fetches plus a detection pass.
+        setTimeout(() => {
+          renderAnalytics(currentCompanies);
+          if (Date.now() - lastLoadAt > 10000) loadData();
+        }, 50);
       } else if (btn.dataset.tab === 'holdings') {
         setTimeout(() => renderPortfolioChart(), 50);
       } else if (btn.dataset.tab === 'settings') {
