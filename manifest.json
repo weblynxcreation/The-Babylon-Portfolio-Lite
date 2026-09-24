@@ -17,7 +17,7 @@
     "service_worker": "background.js",
     "type": "module"
   },
-  "permissions": ["storage", "scripting", "activeTab", "alarms", "tabs"],
+  "permissions": ["storage", "unlimitedStorage", "scripting", "activeTab", "alarms", "tabs"],
   "host_permissions": [
     "https://play.capitalrift.com/*",
     "https://*.vercel.app/*"

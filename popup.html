@@ -452,6 +452,63 @@
     .ipo-item { background:var(--ink); border:1px solid var(--line); padding:12px 14px; margin-bottom:8px; }
     .ipo-row { display:flex; justify-content:space-between; font-family:var(--font-mono); font-size:calc(var(--fs-table) - 1px); margin-bottom:5px; }
     .ipo-name { font-family:var(--font-ui); font-weight:600; color:var(--accent); }
+    .ipo-cov { margin:10px 0 2px; }
+    .ipo-cov-head { display:flex; justify-content:space-between; align-items:baseline; font-family:var(--font-pixel); font-size:7px; color:var(--bone-muted); text-transform:uppercase; letter-spacing:.5px; margin-bottom:5px; }
+    .ipo-cov-head b { font-family:var(--font-mono); font-size:calc(var(--fs-table) + 2px); color:#4ade80; }
+    .ipo-cov-head b.over { color:var(--gold); }
+    .ipo-cov-bar { height:8px; background:var(--surface-elevated); border:1px solid var(--line-2); }
+    .ipo-cov-fill { display:block; height:100%; background:var(--green); image-rendering:pixelated; transition:width var(--dur-2) var(--ease-out); }
+    .ipo-cov-fill.over { background:var(--gold); }
+    .ipo-cov-legend { display:flex; flex-wrap:wrap; gap:4px 12px; font-family:var(--font-mono); font-size:calc(var(--fs-table) - 2px); color:var(--bone-muted); margin-top:6px; }
+    .ipo-cov-legend b { color:var(--bone); font-weight:600; }
+
+    /* ── Chat + DMs ─────────────────────────────────────
+       The log owns its scroll: the panel sits inside .main, and a second
+       scroller would fight the auto-scroll-to-latest once a message lands. */
+    .chat-shell { display:grid; grid-template-columns:188px 1fr; gap:12px; align-items:start; }
+    .chat-rail { background:var(--surface); border:2px solid var(--line); box-shadow:var(--shadow-hard); padding:8px; }
+    .chat-rail-head { font-family:var(--font-pixel); font-size:7px; color:var(--bone-muted); text-transform:uppercase; letter-spacing:.5px; padding:5px 8px 9px; }
+    .chat-channels { display:flex; flex-direction:column; gap:2px; max-height:clamp(240px,52vh,640px); overflow-y:auto; }
+    .chat-chan { display:flex; align-items:center; gap:7px; width:100%; text-align:left; background:transparent; border:1px solid transparent; color:var(--bone-muted); font-family:var(--font-ui); font-size:calc(var(--fs-table) - 1px); font-weight:600; padding:7px 8px; cursor:pointer; transition:color var(--dur-1) linear, background-color var(--dur-1) linear, border-color var(--dur-1) linear; }
+    .chat-chan:hover { color:var(--bone); background:var(--surface-elevated); }
+    .chat-chan.on { color:var(--ink); background:var(--accent); border-color:var(--accent); box-shadow:var(--shadow-hard); }
+    .chat-chan-glyph { font-family:var(--font-pixel); font-size:7px; color:var(--gold); flex:0 0 auto; }
+    .chat-chan.on .chat-chan-glyph { color:var(--ink); }
+    .chat-chan-lbl { flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .chat-dot { flex:0 0 auto; width:7px; height:7px; background:var(--gold); }
+    .chat-chan.on .chat-dot { background:var(--ink); }
+    .chat-pres { flex:0 0 auto; width:7px; height:7px; background:var(--line-2); }
+    .chat-pres.on { background:var(--green); }
+    .chat-chan.on .chat-pres { background:var(--ink); }
+    .chat-rail-empty { font-family:var(--font-mono); font-size:calc(var(--fs-table) - 2px); color:var(--bone-muted); padding:10px 8px; line-height:1.7; }
+    .chat-main { background:var(--surface); border:2px solid var(--line); box-shadow:var(--shadow-hard); display:flex; flex-direction:column; min-width:0; }
+    .chat-head { display:flex; align-items:center; gap:10px; padding:10px 12px; background:var(--surface-elevated); border-bottom:2px solid var(--line); }
+    .chat-head-title { font-family:var(--font-pixel); font-size:8px; color:var(--gold); letter-spacing:.3px; flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .chat-head-meta { flex:1 1 auto; min-width:0; font-family:var(--font-mono); font-size:calc(var(--fs-table) - 2px); color:var(--bone-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .chat-act { flex:0 0 auto; font-family:var(--font-pixel); font-size:7px; padding:6px 9px; background:var(--ink); color:var(--bone-muted); border:1px solid var(--line-2); cursor:pointer; text-transform:uppercase; letter-spacing:.5px; transition:color var(--dur-1) linear, border-color var(--dur-1) linear, box-shadow var(--dur-1) steps(2,end); }
+    .chat-act:hover:not(:disabled) { color:var(--bone); border-color:var(--bone); }
+    .chat-act:disabled { opacity:.4; cursor:not-allowed; }
+    .chat-status { display:none; padding:8px 12px; font-family:var(--font-mono); font-size:calc(var(--fs-table) - 2px); color:var(--bone-muted); border-bottom:1px solid var(--line); background:var(--ink); }
+    .chat-status.show { display:block; }
+    .chat-status.error { color:#f87171; border-bottom-color:var(--red); }
+    .chat-log { height:clamp(250px,50vh,600px); overflow-y:auto; overflow-x:hidden; padding:10px 12px; display:flex; flex-direction:column; gap:1px; background:var(--ink); }
+    .chat-msg { display:grid; grid-template-columns:44px 1fr; gap:9px; padding:4px 6px; margin:0 -6px; }
+    .chat-msg:hover { background:rgba(255,255,255,.03); }
+    .chat-msg-time { font-family:var(--font-mono); font-size:calc(var(--fs-table) - 3px); color:var(--bone-muted); padding-top:2px; text-align:right; }
+    .chat-msg-who { font-family:var(--font-ui); font-size:calc(var(--fs-table) - 1px); font-weight:700; color:var(--bone); }
+    .chat-msg.me .chat-msg-who { color:var(--gold); }
+    .chat-msg-tag { font-family:var(--font-pixel); font-size:6px; color:var(--gold); margin-left:6px; }
+    .chat-msg-edit { font-family:var(--font-mono); font-weight:400; font-size:calc(var(--fs-table) - 3px); color:var(--bone-muted); margin-left:6px; }
+    .chat-msg-body { font-family:var(--font-ui); font-size:calc(var(--fs-table) - 1px); color:var(--bone); line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .chat-msg.deleted .chat-msg-body { color:var(--bone-muted); font-style:italic; }
+    .chat-msg.system .chat-msg-body { color:var(--accent-dim); font-style:italic; }
+    .chat-date { display:flex; align-items:center; gap:9px; margin:9px 0 5px; font-family:var(--font-pixel); font-size:6px; color:var(--bone-muted); text-transform:uppercase; letter-spacing:.5px; }
+    .chat-date::before, .chat-date::after { content:''; flex:1 1 auto; height:1px; background:var(--line); }
+    /* Unread traffic rides on the tab buttons so a message is visible from any tab. */
+    .chat-badge { display:inline-block; min-width:13px; margin-left:5px; padding:1px 3px; font-family:var(--font-mono); font-size:9px; font-weight:700; line-height:1.3; text-align:center; color:var(--ink); background:var(--gold); vertical-align:1px; }
+    .tab-btn.active .chat-badge { background:var(--ink); color:var(--gold); }
+    .chat-badge[hidden] { display:none; }
+    @media (max-width:760px) { .chat-shell { grid-template-columns:1fr; } .chat-channels { max-height:none; flex-direction:row; flex-wrap:wrap; } }
 
     /* ── Polish layer ───────────────────────────────────
        Motion tokens live in :root. Every transition below stays short
@@ -712,6 +769,8 @@
       <button class="tab-btn" data-tab="orders">Orders</button>
       <button class="tab-btn" data-tab="transactions">History</button>
       <button class="tab-btn" data-tab="ipo">IPO</button>
+      <button class="tab-btn" data-tab="chat">Chat<i class="chat-badge" id="chatBadge" hidden></i></button>
+      <button class="tab-btn" data-tab="dms">DMs<i class="chat-badge" id="dmBadge" hidden></i></button>
       <button class="tab-btn" data-tab="market">Market</button>
       <button class="tab-btn" data-tab="economy">Economy</button>
       <button class="tab-btn" data-tab="settings">Settings</button>
@@ -852,6 +911,46 @@
     <div class="panel" id="panel-ipo">
       <div class="empty-state" id="ipoEmpty" style="display:none;"><strong>NO IPO OFFERINGS</strong>Check back for new listings</div>
       <div id="ipoList"></div>
+    </div>
+
+    <!-- Chat: the game's own community channels -->
+    <div class="panel" id="panel-chat">
+      <div class="chat-shell">
+        <aside class="chat-rail">
+          <div class="chat-rail-head">Game channels</div>
+          <div class="chat-channels" id="chatChannels"></div>
+        </aside>
+        <div class="chat-main">
+          <div class="chat-head">
+            <div class="chat-head-title" id="chatTitle">general</div>
+            <div class="chat-head-meta" id="chatMeta">Connecting…</div>
+            <button type="button" class="chat-act" id="chatOlderBtn" disabled title="Load the previous 50 messages">Older</button>
+          </div>
+          <div class="chat-status" id="chatStatus"></div>
+          <div class="chat-log" id="chatLog" tabindex="0"></div>
+          <div class="empty-state" id="chatEmpty" style="display:none;"><strong>NO MESSAGES</strong>Nothing has been posted in this channel</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- DMs: every direct-message thread on the account -->
+    <div class="panel" id="panel-dms">
+      <div class="chat-shell">
+        <aside class="chat-rail">
+          <div class="chat-rail-head">Direct messages</div>
+          <div class="chat-channels" id="dmRoster"></div>
+        </aside>
+        <div class="chat-main">
+          <div class="chat-head">
+            <div class="chat-head-title" id="dmTitle">No thread</div>
+            <div class="chat-head-meta" id="dmMeta">Pick a conversation</div>
+            <button type="button" class="chat-act" id="dmOlderBtn" disabled title="Load the previous 50 messages">Older</button>
+          </div>
+          <div class="chat-status" id="dmStatus"></div>
+          <div class="chat-log" id="dmLog" tabindex="0"></div>
+          <div class="empty-state" id="dmEmpty" style="display:none;"><strong>NO DIRECT MESSAGES</strong>Threads started in Capital Rift appear here</div>
+        </div>
+      </div>
     </div>
 
     <!-- Market Analysis -->

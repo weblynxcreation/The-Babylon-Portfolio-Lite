@@ -143,7 +143,26 @@
     economyPulseMeta: document.getElementById('economyPulseMeta'),
     economyPulse: document.getElementById('economyPulse'),
     economyGainersBody: document.getElementById('economyGainersBody'),
-    economyLosersBody: document.getElementById('economyLosersBody')
+    economyLosersBody: document.getElementById('economyLosersBody'),
+    // Chat + DMs. The composer elements are looked up by id inside the
+    // CHAT-COMPOSE block instead: in the read-only editions that markup is
+    // stripped, and an els key nothing reads would be left behind.
+    chatChannels: document.getElementById('chatChannels'),
+    chatTitle: document.getElementById('chatTitle'),
+    chatMeta: document.getElementById('chatMeta'),
+    chatOlderBtn: document.getElementById('chatOlderBtn'),
+    chatStatus: document.getElementById('chatStatus'),
+    chatLog: document.getElementById('chatLog'),
+    chatEmpty: document.getElementById('chatEmpty'),
+    chatBadge: document.getElementById('chatBadge'),
+    dmRoster: document.getElementById('dmRoster'),
+    dmTitle: document.getElementById('dmTitle'),
+    dmMeta: document.getElementById('dmMeta'),
+    dmOlderBtn: document.getElementById('dmOlderBtn'),
+    dmStatus: document.getElementById('dmStatus'),
+    dmLog: document.getElementById('dmLog'),
+    dmEmpty: document.getElementById('dmEmpty'),
+    dmBadge: document.getElementById('dmBadge')
   };
 
   let currentCompanies = [];
@@ -1787,13 +1806,74 @@
     }).join('');
   }
 
+  // ---- IPO coverage read-out -------------------------------------------------
+  // "Covered" is the whole demand book against the offering size: over 100 %
+  // means the IPO is oversubscribed. The game's demand figure already counts
+  // our own open bid, so the projected book replaces it with the draft.
+  const ipoDraft = {};
+  function ipoPct(n) {
+    if (!isFinite(n)) return '—';
+    return (Math.abs(n) >= 10 ? n.toFixed(0) : n.toFixed(1)) + '%';
+  }
+  function ipoOwnQty(o) {
+    const d = ipoDraft[o.listingId];
+    if (d && String(d.qty).trim() !== '') {
+      const q = parseInt(d.qty, 10);
+      return q > 0 ? q : 0;
+    }
+    return (o.yourBid && Number(o.yourBid.qty)) || 0;
+  }
+  function ipoStats(o) {
+    const offered = Number(o.sharesOffered) || 0;
+    const own = ipoOwnQty(o);
+    const book = Math.max(0, (Number(o.demand) || 0) - ((o.yourBid && Number(o.yourBid.qty)) || 0)) + own;
+    return {
+      offered, book, own,
+      bookPct: offered ? (book / offered) * 100 : 0,
+      floatPct: offered ? (own / offered) * 100 : 0,
+      slicePct: book ? (own / book) * 100 : 0
+    };
+  }
+  function ipoCoverageHtml(o) {
+    const s = ipoStats(o);
+    const over = s.bookPct >= 100;
+    return `
+        <div class="ipo-cov">
+          <div class="ipo-cov-head"><span>Bid book covered</span><b class="js-bookpct${over ? ' over' : ''}">${ipoPct(s.bookPct)}</b></div>
+          <div class="ipo-cov-bar"><i class="ipo-cov-fill${over ? ' over' : ''} js-fill" style="width:${Math.min(100, s.bookPct).toFixed(2)}%"></i></div>
+          <div class="ipo-cov-legend">
+            <span>Offered <b class="js-offered">${fmtNum(s.offered)}</b></span>
+            <span>Book <b class="js-book">${fmtNum(s.book)}</b></span>
+            <span>Your bid <b class="js-float">${ipoPct(s.floatPct)}</b> of float · <b class="js-slice">${ipoPct(s.slicePct)}</b> of book</span>
+          </div>
+        </div>`;
+  }
+  // The IPO tab is rebuilt from scratch on every data tick, so a half-typed bid
+  // has to survive it. These two only ever match the bid form's own inputs, so
+  // they stay inert in the read-only editions that never render one.
+  function ipoFocusSnapshot() {
+    const el = document.activeElement;
+    if (!el || !el.matches || !el.matches('.ipo-input')) return null;
+    return { key: `${el.closest('.ipo-bid').dataset.bid}|${el.dataset.field}`, at: el.selectionStart };
+  }
+  function ipoFocusRestore(snap) {
+    if (!snap) return;
+    const [id, field] = snap.key.split('|');
+    const el = els.ipoList.querySelector(`.ipo-bid[data-bid="${id}"] [data-field="${field}"]`);
+    if (!el) return;
+    el.focus();
+    try { el.setSelectionRange(snap.at, snap.at); } catch (e) {}
+  }
+
+
   // Render IPO offerings
   function renderIpo(offerings) {
     currentIpoOfferings = offerings;
     if (!offerings.length) { els.ipoList.innerHTML = ''; els.ipoEmpty.style.display = 'block'; return; }
     els.ipoEmpty.style.display = 'none';
+    const snap = ipoFocusSnapshot();
     els.ipoList.innerHTML = offerings.map(o => `
-      <div class="ipo-item">
+      <div class="ipo-item" data-listing="${o.listingId}">
         <div class="ipo-row"><span class="ipo-name">${o.name}</span><span>${o.listingId.slice(0,8)}</span></div>
         <div class="ipo-row"><span>Floor Price</span><span>$${o.floorPrice.toLocaleString()}</span></div>
         <div class="ipo-row"><span>Shares Offered</span><span>${fmtNum(o.sharesOffered)}</span></div>
@@ -1802,9 +1882,10 @@
         <div class="ipo-row"><span>Demand</span><span>${fmtNum(o.demand)} shares (${o.bidders} bidders)</span></div>
         <div class="ipo-row"><span>Ends</span><span>${new Date(o.endsAt).toLocaleString()}</span></div>
         ${o.yourBid ? `<div class="ipo-row"><span class="detail-value gold">Your Bid: ${fmtNum(o.yourBid.qty)} @ $${o.yourBid.price.toLocaleString()}</span></div>` : ''}
+        ${ipoCoverageHtml(o)}
       </div>
     `).join('');
-
+    ipoFocusRestore(snap);
   }
 
 
@@ -2123,6 +2204,8 @@
   // Tab switch handler for analytics
   els.tabBtns.forEach(btn => {
     btn.addEventListener('click', () => {
+      // A second-by-second chat tick must not keep running behind another tab.
+      if (btn.dataset.tab !== 'chat' && btn.dataset.tab !== 'dms') stopChat();
       // Panels skipped while hidden render from the cached payload on open.
       if (dirtyTabs.has(btn.dataset.tab)) renderTab(btn.dataset.tab);
       if (btn.dataset.tab === 'analytics') {
@@ -2142,6 +2225,8 @@
         setTimeout(() => ensureMarketData(), 50);
       } else if (btn.dataset.tab === 'economy') {
         setTimeout(() => ensureEconomyData(), 50);
+      } else if (btn.dataset.tab === 'chat' || btn.dataset.tab === 'dms') {
+        setTimeout(() => startChat(), 50);
       }
     });
   });
@@ -3723,6 +3808,413 @@
   attachTableSort(els.economyPayrollBody?.closest('table'));
   attachTableSort(els.economyLbBody?.closest('table'));
   attachTableSort(els.economyQuotesBody?.closest('table'));
+
+  // ── Chat + DMs ────────────────────────────────────────────────────────
+  // The game's own /social channels. Both tabs read the same two endpoints —
+  // a DM is just a channel with kind === 'dm' — so one tick drives whichever
+  // pane is on screen, once a second, and only the visible pane's thread is
+  // re-read. The rail and badges come from the summary, which the worker
+  // caches for a few seconds.
+  const CHAT_TICK_MS = 1000;
+  const chatThreads = new Map();   // channelId -> {messages, oldest, hasMore, loadingOlder}
+  const chatSeen = new Map();      // channelId -> newest id painted this session
+  const chatSel = { chat: null, dms: null };
+  let chatSummary = null;
+  let chatSelfId = null;
+  let chatTimer = null;
+  let chatTickBusy = false;
+  let chatFails = 0;
+  // The composer seam. The write block below overrides these; in the read-only
+  // editions it is stripped, and these no-ops are what leaves the panels
+  // rendering a thread with no input under it.
+  const chatCompose = {
+    sync() {},
+    busy() {}
+  };
+
+  function chatPane(which) {
+    return which === 'dms'
+      ? { which: 'dms', rail: els.dmRoster, title: els.dmTitle, meta: els.dmMeta, status: els.dmStatus, log: els.dmLog, empty: els.dmEmpty, older: els.dmOlderBtn, badge: els.dmBadge, fallback: 'No thread' }
+      : { which: 'chat', rail: els.chatChannels, title: els.chatTitle, meta: els.chatMeta, status: els.chatStatus, log: els.chatLog, empty: els.chatEmpty, older: els.chatOlderBtn, badge: els.chatBadge, fallback: 'general' };
+  }
+
+  function chatChannels() {
+    return Array.isArray(chatSummary?.channels) ? chatSummary.channels : [];
+  }
+  function chatChannelList(which) {
+    const all = chatChannels();
+    return which === 'dms' ? all.filter(c => c.kind === 'dm') : all.filter(c => c.kind !== 'dm');
+  }
+  function chatChannelById(id) {
+    if (!id) return null;
+    return chatChannels().find(c => String(c.id) === String(id)) || null;
+  }
+  function chatChannelLabel(c) {
+    if (!c) return '';
+    if (c.kind === 'dm') return c.dmWith?.name || c.name || 'Direct message';
+    return c.name || c.key || 'channel';
+  }
+  function chatGlyph(c) {
+    if (c.kind === 'player') return '◆';
+    switch (c.key) {
+      case 'general': return '▸';
+      case 'bug-reports': return '!';
+      case 'suggestions': return '*';
+      default: return '#';
+    }
+  }
+  function chatPeerOnline(c) {
+    const peer = c?.dmWith?.id;
+    if (peer == null) return false;
+    const friends = Array.isArray(chatSummary?.friends) ? chatSummary.friends : [];
+    const f = friends.find(x => String(x?.player?.id) === String(peer));
+    return !!f?.online;
+  }
+  function chatIsUnread(c) {
+    const seen = chatSeen.has(String(c.id)) ? chatSeen.get(String(c.id)) : Number(c.myLastReadId || 0);
+    return Number(c.lastMessageId || 0) > (Number.isFinite(seen) ? seen : 0);
+  }
+  function chatPad(n) { return String(n).padStart(2, '0'); }
+  function chatClock(iso) {
+    const d = new Date(iso);
+    return Number.isFinite(d.getTime()) ? `${chatPad(d.getHours())}:${chatPad(d.getMinutes())}` : '--:--';
+  }
+  function chatDay(iso) {
+    const d = new Date(iso);
+    if (!Number.isFinite(d.getTime())) return '';
+    const now = new Date();
+    const sameDay = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+    if (sameDay(d, now)) return 'Today';
+    const y = new Date(now.getTime() - 86400000);
+    if (sameDay(d, y)) return 'Yesterday';
+    return d.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' });
+  }
+
+  function setChatStatus(which, text, isErr, holdMs) {
+    const p = chatPane(which);
+    if (!p.status) return;
+    if (!text) {
+      p.status.className = 'chat-status';
+      p.status.textContent = '';
+      p.status.dataset.until = '';
+      return;
+    }
+    p.status.className = `chat-status show${isErr ? ' error' : ''}`;
+    p.status.textContent = text;
+    p.status.dataset.until = holdMs ? String(Date.now() + holdMs) : '';
+  }
+  function chatStatusHeld(which) {
+    const s = chatPane(which).status;
+    const until = s ? Number(s.dataset.until || 0) : 0;
+    return until > Date.now();
+  }
+
+  function renderChatRail(which) {
+    const p = chatPane(which);
+    if (!p.rail) return;
+    const list = chatChannelList(which);
+    const sel = chatSel[which];
+    const sig = JSON.stringify([
+      sel,
+      list.map(c => [c.id, chatChannelLabel(c), c.lastMessageId, chatSeen.get(String(c.id)) ?? 0, chatPeerOnline(c) ? 1 : 0])
+    ]);
+    if (p.rail.dataset.sig === sig) return;
+    p.rail.dataset.sig = sig;
+    p.rail.innerHTML = '';
+    if (!list.length) {
+      const e = document.createElement('div');
+      e.className = 'chat-rail-empty';
+      e.textContent = which === 'dms'
+        ? 'No threads yet.\nStart one with New.'
+        : 'No channels on this account.';
+      p.rail.appendChild(e);
+      return;
+    }
+    for (const c of list) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'chat-chan' + (String(c.id) === String(sel) ? ' on' : '');
+      const g = document.createElement('span');
+      g.className = 'chat-chan-glyph';
+      g.textContent = chatGlyph(c);
+      const l = document.createElement('span');
+      l.className = 'chat-chan-lbl';
+      l.textContent = chatChannelLabel(c);
+      l.title = chatChannelLabel(c);
+      b.append(g, l);
+      if (chatIsUnread(c)) {
+        const d = document.createElement('span');
+        d.className = 'chat-dot';
+        d.title = 'Unread';
+        b.appendChild(d);
+      }
+      if (c.kind === 'dm') {
+        const pr = document.createElement('span');
+        pr.className = 'chat-pres' + (chatPeerOnline(c) ? ' on' : '');
+        pr.title = chatPeerOnline(c) ? 'Online' : 'Offline';
+        b.appendChild(pr);
+      }
+      b.addEventListener('click', () => selectChatChannel(which, c.id));
+      p.rail.appendChild(b);
+    }
+  }
+
+  function chatMsgNode(m) {
+    const row = document.createElement('div');
+    row.className = 'chat-msg';
+    const t = document.createElement('div');
+    t.className = 'chat-msg-time';
+    t.textContent = chatClock(m.createdAt);
+    row.appendChild(t);
+
+    const col = document.createElement('div');
+    const who = document.createElement('div');
+    who.className = 'chat-msg-who';
+    who.textContent = m.author?.name || 'Game';
+    // roleColor is server-supplied: only a bare hex literal may become a style.
+    if (/^#[0-9a-f]{3,8}$/i.test(String(m.roleColor || ''))) who.style.color = String(m.roleColor);
+    if (m.author?.admin || m.author?.beta) {
+      const tag = document.createElement('span');
+      tag.className = 'chat-msg-tag';
+      tag.textContent = m.author.admin ? 'ADMIN' : 'BETA';
+      who.appendChild(tag);
+    }
+    if (m.editedAt) {
+      const ed = document.createElement('span');
+      ed.className = 'chat-msg-edit';
+      ed.textContent = '(edited)';
+      who.appendChild(ed);
+    }
+    col.appendChild(who);
+
+    const body = document.createElement('div');
+    body.className = 'chat-msg-body';
+    body.textContent = m.deleted ? 'message deleted' : String(m.body ?? '');
+    col.appendChild(body);
+    row.appendChild(col);
+
+    if (m.deleted) row.classList.add('deleted');
+    if (!m.author) row.classList.add('system');
+    else if (chatSelfId != null && String(m.author.id) === String(chatSelfId)) row.classList.add('me');
+    return row;
+  }
+
+  function renderChatLog(which, opts) {
+    const p = chatPane(which);
+    const log = p.log;
+    if (!log) return;
+    const id = chatSel[which];
+    const msgs = (id && chatThreads.get(String(id))?.messages) || [];
+    const sig = `${id || '-'}|${msgs.map(m => `${m.id}~${m.deleted ? 1 : 0}${m.editedAt ? 1 : 0}~${(m.body || '').length}~${m.author?.id ?? 'x'}`).join(',')}`;
+    const switched = log.dataset.shown !== String(id || '');
+    // Measured before the rebuild: once the nodes are replaced the scroll box
+    // is as tall as its content and the answer is always "at the bottom".
+    const stuck = log.scrollHeight - log.scrollTop - log.clientHeight < 32;
+    if (sig === log.dataset.sig && !switched) return;
+    log.dataset.sig = sig;
+    log.dataset.shown = String(id || '');
+    log.innerHTML = '';
+
+    let lastDay = '';
+    for (const m of msgs) {
+      const day = chatDay(m.createdAt);
+      if (day && day !== lastDay) {
+        lastDay = day;
+        const sep = document.createElement('div');
+        sep.className = 'chat-date';
+        sep.textContent = day;
+        log.appendChild(sep);
+      }
+      log.appendChild(chatMsgNode(m));
+    }
+    if (p.empty) p.empty.style.display = msgs.length ? 'none' : 'block';
+    log.style.display = msgs.length ? '' : 'none';
+
+    if (opts?.keep) log.scrollTop = log.scrollHeight - opts.keep[1] + opts.keep[0];
+    else if (switched || stuck || opts?.pin) log.scrollTop = log.scrollHeight;
+  }
+
+  function updateChatHead(which) {
+    const p = chatPane(which);
+    const c = chatChannelById(chatSel[which]);
+    if (p.title) p.title.textContent = c ? chatChannelLabel(c) : p.fallback;
+    const thr = c ? chatThreads.get(String(c.id)) : null;
+    const msgs = thr?.messages || [];
+    const last = msgs[msgs.length - 1];
+    if (p.meta) {
+      const bits = [];
+      if (c?.topic && which === 'chat') bits.push(c.topic);
+      bits.push(`${fmtNum(msgs.length)} shown`);
+      bits.push(chatFails ? 'reconnecting' : last ? `last ${timeAgo(Date.parse(last.createdAt))}` : 'quiet');
+      p.meta.textContent = bits.join(' · ');
+    }
+    if (p.older) p.older.disabled = !(thr?.hasMore && thr?.oldest) || !!thr?.loadingOlder;
+  }
+
+  function updateChatBadges() {
+    for (const which of ['chat', 'dms']) {
+      const el = chatPane(which).badge;
+      if (!el) continue;
+      const n = chatChannelList(which).filter(chatIsUnread).length;
+      el.hidden = n === 0;
+      el.textContent = n > 9 ? '9+' : String(n);
+    }
+  }
+
+  function markChannelSeen(which, id) {
+    const msgs = chatThreads.get(String(id))?.messages;
+    if (!msgs?.length) return;
+    const newest = Number(msgs[msgs.length - 1].id);
+    if (!Number.isFinite(newest)) return;
+    if (newest <= (chatSeen.get(String(id)) || 0)) return;
+    chatSeen.set(String(id), newest);
+    // The unread dot has to go the moment the thread is read. Waiting for the
+    // next tick leaves a channel that is open on screen still marked unread.
+    renderChatRail(which);
+    updateChatBadges();
+  }
+
+  function chatDefaultChannel(which) {
+    const list = chatChannelList(which);
+    if (which === 'chat') {
+      const g = list.find(c => c.key === 'general');
+      if (g) return String(g.id);
+    }
+    return list.length ? String(list[0].id) : null;
+  }
+
+  async function chatFetchSummary(force) {
+    const resp = await sendMessage({ type: 'GET_CHAT_SUMMARY', force: !!force }, { silent: true });
+    if (!resp?.success) throw new Error(resp?.error || 'Chat summary unavailable');
+    chatSummary = resp.data || {};
+    if (chatSummary.selfId != null) chatSelfId = String(chatSummary.selfId);
+    return chatSummary;
+  }
+
+  async function chatFetchMessages(id, before) {
+    const resp = await sendMessage({ type: 'GET_CHAT_MESSAGES', channelId: id, before: before || null }, { silent: true });
+    if (!resp?.success) throw new Error(resp?.error || 'Chat messages unavailable');
+    const rows = Array.isArray(resp.data?.messages) ? resp.data.messages : [];
+    // The server pages oldest-first with `before`. Every fetch merges into what
+    // the thread already holds — a newest-page fetch must not drop the older
+    // pages just because the tick runs 50 rows wide, and pages can overlap.
+    const held = chatThreads.get(String(id))?.messages || [];
+    const out = [];
+    const seen = new Set();
+    for (const m of [...rows, ...held]) {
+      const k = String(m.id);
+      if (seen.has(k) || m.id == null) continue;
+      seen.add(k);
+      out.push(m);
+    }
+    if (out.every(m => Number.isFinite(Number(m.id)))) out.sort((a, b) => Number(a.id) - Number(b.id));
+    const prev = chatThreads.get(String(id));
+    const exhausted = !!before && rows.length === 0;
+    const thread = {
+      messages: out,
+      oldest: out.length ? out[0].id : null,
+      // An empty older page is the start of the channel: say so for good, or
+      // the next newest-page fetch would re-arm a button with nothing to do.
+      // A short page is the same signal, so trust the worker's flag when it
+      // bothers to carry one and only guess when it does not.
+      hasMore: exhausted || prev?.olderDone ? false
+        : (resp.data?.hasMore != null ? !!resp.data.hasMore : (!!before && rows.length > 0)),
+      loadingOlder: false,
+      olderDone: exhausted || !!prev?.olderDone
+    };
+    chatThreads.set(String(id), thread);
+    return thread;
+  }
+
+  async function selectChatChannel(which, id) {
+    id = String(id);
+    if (chatSel[which] === id) return;
+    chatSel[which] = id;
+    const p = chatPane(which);
+    if (p.log) p.log.dataset.sig = '';
+    renderChatRail(which);
+    chatCompose.sync(which);
+    if (!chatThreads.has(id)) {
+      setChatStatus(which, 'Loading channel…', false, 1200);
+      try { await chatFetchMessages(id); }
+      catch (e) { setChatStatus(which, `Could not open this channel: ${e.message}`, true, 3500); }
+    }
+    renderChatLog(which, { pin: true });
+    updateChatHead(which);
+    markChannelSeen(which, id);
+  }
+
+  async function loadOlder(which) {
+    const id = chatSel[which];
+    const thread = id ? chatThreads.get(String(id)) : null;
+    if (!thread?.oldest || thread.loadingOlder) return;
+    const p = chatPane(which);
+    thread.loadingOlder = true;
+    updateChatHead(which);
+    const keep = p.log ? [p.log.scrollTop, p.log.scrollHeight] : null;
+    try {
+      await chatFetchMessages(id, thread.oldest);
+      renderChatLog(which, { keep });
+    } catch (e) {
+      setChatStatus(which, `Could not load earlier messages: ${e.message}`, true, 3500);
+    } finally {
+      const now = chatThreads.get(String(id));
+      if (now) now.loadingOlder = false;
+      updateChatHead(which);
+    }
+  }
+
+  async function chatTick() {
+    const which = activeTabId();
+    if (which !== 'chat' && which !== 'dms') { stopChat(); return; }
+    if (chatTickBusy || document.hidden) return;
+    chatTickBusy = true;
+    try {
+      await chatFetchSummary(false);
+      const list = chatChannelList(which);
+      if (chatSel[which] && !list.some(c => String(c.id) === String(chatSel[which]))) chatSel[which] = null;
+      if (!chatSel[which]) {
+        chatSel[which] = chatDefaultChannel(which);
+        chatCompose.sync(which);
+      }
+      if (chatSel[which]) await chatFetchMessages(chatSel[which]);
+      chatFails = 0;
+      if (!chatStatusHeld(which)) setChatStatus(which, '', false);
+      renderChatRail('chat');
+      renderChatRail('dms');
+      renderChatLog(which);
+      updateChatHead(which);
+      markChannelSeen(which, chatSel[which]);
+    } catch (e) {
+      chatFails++;
+      // One hiccup on a 1 s tick is noise; a second is worth saying out loud.
+      if (chatFails === 2) setChatStatus(which, `Chat is not responding: ${e.message}`, true);
+      renderChatRail('chat');
+      renderChatRail('dms');
+    } finally {
+      chatTickBusy = false;
+      updateChatBadges();
+    }
+  }
+
+  function startChat() {
+    if (chatTimer) return;
+    chatTick();
+    chatTimer = setInterval(chatTick, CHAT_TICK_MS);
+  }
+  function stopChat() {
+    if (!chatTimer) return;
+    clearInterval(chatTimer);
+    chatTimer = null;
+  }
+
+  els.chatOlderBtn?.addEventListener('click', () => loadOlder('chat'));
+  els.dmOlderBtn?.addEventListener('click', () => loadOlder('dms'));
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopChat();
+    else if (activeTabId() === 'chat' || activeTabId() === 'dms') startChat();
+  });
+
 
   loadData();
   loadLiquidMoney();

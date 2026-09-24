@@ -1,12 +1,12 @@
 # The Babylon Portfolio Lite - Capital Rift Market Pilot
 
-A read-only Chrome extension for tracking your Capital Rift stock portfolio, with live analytics in a Quest Trade-inspired 8-bit retro UI.
+A read-only Chrome extension for tracking your Capital Rift stock portfolio, with live analytics and the game's community chat and direct messages - all in a Quest Trade-inspired 8-bit retro UI.
 
 ![The Babylon Portfolio](icons/brand-logo.png)
 
-> **Lite edition** — a read-only viewer. Everything the Premium edition has, except the Discord webhook integration and every trading action.
+> **Lite edition** — a read-only viewer. Everything the Premium edition has, except the Discord webhook integration, the chat composer, and every trading action.
 >
-> You **cannot** buy or sell shares, place or cancel orders, or bid on IPOs from this build. There is no Trade tab: the extension never sends a mutation to the game API. Trades you make on the Capital Rift website are still detected, logged in the History tab, and reflected in your holdings — the extension only watches. For Discord alerts on top of the same read-only tracker, use the Premium edition.
+> You **cannot** buy or sell shares, place or cancel orders, bid on IPOs, post in chat or open a direct message from this build. There is no Trade tab and no chat composer: the extension never sends a mutation to the game API. Trades you make on the Capital Rift website are still detected, logged in the History tab, and reflected in your holdings, and the game's channels and DMs are readable here second by second — the extension only watches. For Discord alerts on top of the same read-only tracker, use the Premium edition.
 
 ## Features
 
@@ -23,7 +23,7 @@ A read-only Chrome extension for tracking your Capital Rift stock portfolio, wit
 - **Order Book** - View live bids and asks with spread information
 - **Order Monitor** - See every open order and when it was placed
 - **Transaction History** - Complete log of the trades, orders and IPO bids detected on your account
-- **Read-Only Guarantee** - No buy, sell, cancel or bid action exists anywhere in the interface or the service worker
+- **Read-Only Guarantee** - Enforced at the one `fetch` binding every game request passes through: nothing that is not a `GET` to `play.capitalrift.com` can leave this build. 78 mutation routes were audited - 12 are refused by name at the message boundary with a clear edition message, the other 66 die at the fetch gate. The remote viewer is another origin, so portfolio sync keeps working
 
 ### Analytics
 - **Advanced Analytics** - Deep dive into market data with interactive charts
@@ -35,7 +35,8 @@ A read-only Chrome extension for tracking your Capital Rift stock portfolio, wit
 - **Spark Data Visualization** - Historical price movements at a glance
 
 ### Market Access
-- **IPO Board** - Watch upcoming and live offerings and track the bids on your account
+- **IPO Board** - Watch every live offering with its floor price, float, book value, demand, closing time, and the bids already on your account
+- **IPO Coverage Read-Out** - Per offering, how much of the float the whole bid book covers — the bar turns amber past 100% when the listing is oversubscribed — alongside the count you would take of the float and of the book if you bid. Placing the bid itself happens in the game; this build only reads the book
 - **Market Overview** - Sortable table of all available companies
 - **Market Analysis** - Scan the whole item exchange and list every commodity with its price, 24h change, base price, spread, NPC quotes, best bid/ask, book depth, trend and volume
 - **Filter Options** - Sort by value, yield, price, and more
@@ -50,6 +51,15 @@ A read-only Chrome extension for tracking your Capital Rift stock portfolio, wit
 - **Companies & Equity** - Your stake in every company you own
 - **Leaderboards** - Wealth and loyalty boards
 - **Market Pulse** - Scan breadth with top gainers and losers
+
+### Community Chat & DMs (read-only)
+- **Chat Tab** - The game's own community channels, live in the popup on a **1-second** refresh and opening on `general`: new posts appear without a reload while the header reports `last 12s ago`, `quiet`, or `reconnecting`
+- **Channel Rail** - Every channel you are in, with a per-kind glyph, an unread dot for channels that moved since you last looked, and a count badge on the tab button
+- **DMs Tab** - Every direct-message thread on the account, each with an online/offline presence dot for the other player
+- **Message Detail** - Timestamps, server-supplied author colours, `ADMIN` / `BETA` role tags, `(edited)` markers, `message deleted` rows, day separators, and your own posts pulled to the other side of the log
+- **Scrollback** - **Older** pages the previous 50 messages from the game's own cursor and holds your scroll position while it does
+- **Read-Only By Design** - There is no composer, no **New** button, and no player finder in this edition. Posting and opening threads are writes, so both chat write routes are refused at the message boundary with a clear edition message - and even if one were reached, the fetch gate would stop it
+- **Cost Kept Honest** - The tick runs only while a Chat or DMs tab is in front: it stops when you switch tabs or the popup loses focus, and both tabs share one cached channel summary instead of polling the list twice a second
 
 ### UI/UX
 - **Retro 8-bit Design** - Quest Trade-inspired pixel art aesthetic
@@ -120,6 +130,22 @@ Trading happens on the Capital Rift website, not in this extension. Buy and sell
 3. Toggle between 1H and 24H timeframes
 4. Monitor the progress indicator for performance trends
 
+### Following Chat & DMs
+
+1. Open the **Chat** tab — it selects `general` and refreshes the log every second while you are on it
+2. Click any channel in the rail; its unread dot clears once you have looked at it
+3. Click **Older** to page back through the channel's history 50 messages at a time
+4. Open the **DMs** tab for your direct-message threads, with a presence dot beside each peer
+
+This edition has no composer: reading is the feature, and posting stays in the game.
+
+### Reading the IPO Board
+
+1. Open the **IPO** tab for the live offerings, each with floor price, float, book value, demand and its closing time
+2. Read the **Bid book covered** bar for how hot the listing is; past 100% the IPO is oversubscribed
+3. Your own bid, when the account has one, is listed under `Your Bid`
+4. To bid — or to bid above the floor — do it in the game; the board picks the bid up on the next poll and files it under **History**
+
 ### Remote Access Setup
 
 1. Deploy the remote viewer project (see [Remote Viewer Deployment](#remote-viewer-deployment))
@@ -163,6 +189,11 @@ The extension communicates with Capital Rift's API:
 - `/api/orders` - Open order snapshot
 - `/api/transactions` - Trade history
 - `/api/dividends` - Dividend tracking
+- `/api/social/summary` - Channels, unread markers, friends and presence (cached 4s, shared by both chat tabs)
+- `/api/social/channels/{id}/messages` - Channel and DM history, paged with the game's own `before` cursor
+- `/api/social/players/search` - Available to the service worker but unused here: the player finder is a write-path helper and this edition has none
+
+Every other game route this build knows about is a `GET`. The writes the full build performs are either removed from the interface or stopped at the fetch gate.
 
 ## Development
 
@@ -265,6 +296,18 @@ Full exchange scan with every commodity's price, 24h change, base price, spread,
 Complete log of the trades, orders and IPO bids detected on your account
 ![History Tab](screenshots/history-tab.png)
 
+### IPO Panel
+Live offerings with their floor price, float, demand and the covered-bid bar - read-only here, with no bid form
+![IPO Tab](screenshots/ipo-tab.png)
+
+### Chat Tab
+The game's community channels on a one-second tick, with the channel rail, unread dots and role tags
+![Chat Tab](screenshots/chat-tab.png)
+
+### DMs Tab
+Every direct-message thread with peer presence and scrollback paging
+![DMs Tab](screenshots/dm-tab.png)
+
 ### Economy - World & Quotes
 Game-day macro stats, cash supply, and commodity quotes
 ![Economy Tab](screenshots/economy-tab.png)
@@ -288,7 +331,9 @@ Wealth and loyalty boards plus scan breadth with top gainers and losers
 - **API Rate Limits**: Respect Capital Rift's API rate limits to avoid throttling
 - **Remote Viewer**: Requires Vercel deployment and KV database setup
 - **No Discord Integration**: This build does not include webhook alerts or Discord exports — see the Premium edition for those
-- **No Trading**: Buying, selling, cancelling orders and IPO bidding are deliberately absent. The trade endpoints in the service worker were removed, not just hidden — the messages are refused at the boundary, so no part of this build can place a mutation
+- **No Trading**: Buying, selling, cancelling orders and IPO bidding are deliberately absent. The trade endpoints in the service worker were removed, not just hidden — the messages are refused at the boundary, and every remaining write dies at the single `fetch` gate, so no part of this build can place a mutation
+- **No Posting**: Chat and DMs are read-only. There is no composer and no way to start a thread; both chat write routes answer an edition message instead of sending
+- **Chat Only While Open**: The one-second tick runs only while a Chat or DMs tab is in front of the popup, so messages you sent elsewhere appear when you are looking, not in the background
 - **Passive Detection**: Transactions appear after the next poll or the next time the popup loads, so a trade can take up to a minute to show up in History
 
 ## Future Enhancements

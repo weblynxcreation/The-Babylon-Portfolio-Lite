@@ -62,7 +62,23 @@ async function apiFetch(url, init = {}){
 
 // Every call site in this file keeps using plain `fetch(...)`; the binding
 // below routes them through the policy above.
-const fetch = apiFetch;
+//
+// The read-only guarantee, enforced here rather than case by case: the full
+// build doubles as a generic game-API bridge, so ~80 message types still name a
+// game mutation in this worker. Refusing a hand-picked list of them would drift
+// the moment a route is added; gating the one binding every request passes
+// through cannot. Nothing that is not a read leaves for the game origin, and
+// the Discord webhook and the remote viewer are other origins.  The cases above
+// are refused with a clear message; anything that slips past them dies here.
+const GAME_ORIGIN = 'https://play.capitalrift.com';
+async function readOnlyFetch(url, init = {}){
+  const method = String((init && init.method) || 'GET').toUpperCase();
+  if (method !== 'GET' && String(url).indexOf(GAME_ORIGIN) === 0) {
+    throw new Error('Read-only edition: this build never writes to the game API (' + method + ' ' + String(url).slice(GAME_ORIGIN.length) + ')');
+  }
+  return apiFetch(url, init);
+}
+const fetch = readOnlyFetch;
 
 let PLAYER_ID = null;
 let PILOTING = null;   // /api/me.piloting (the company currently being piloted) or null
@@ -1487,15 +1503,30 @@ function calculateDividends(bankTransactions, companies){
   }
   return {dividends: divs, totalDividends: total};
 }
+// The trade log only ever grows, and it used to store the game's whole response
+// body per entry — enough to push chrome.storage.local over its quota, after
+// which every write rejected with "Resource::kQuotaBytes quota exceeded". That
+// arrived as a failed trade even though the order had already reached the game,
+// so the log is capped here and a rejected write is reported, never thrown.
+const LEDGER_KEEP = 300;
 async function persistAll(){
-  await chrome.storage.local.set({
-    [STORAGE_KEYS.PORTFOLIO]: portfolioCache,
-    [STORAGE_KEYS.DIVIDENDS]: dividendsCache,
-    [STORAGE_KEYS.TRANSACTIONS]: transactionsCache,
-    [STORAGE_KEYS.PREVIOUS_HOLDINGS]: previousHoldingsMap,
-    [STORAGE_KEYS.PREVIOUS_ORDERS]: previousOrders,
-    [STORAGE_KEYS.PREVIOUS_IPO_BIDS]: previousIpoBids
-  });
+  if (Array.isArray(transactionsCache) && transactionsCache.length > LEDGER_KEEP) {
+    transactionsCache = transactionsCache.slice(-LEDGER_KEEP);
+  }
+  try {
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.PORTFOLIO]: portfolioCache,
+      [STORAGE_KEYS.DIVIDENDS]: dividendsCache,
+      [STORAGE_KEYS.TRANSACTIONS]: transactionsCache,
+      [STORAGE_KEYS.PREVIOUS_HOLDINGS]: previousHoldingsMap,
+      [STORAGE_KEYS.PREVIOUS_ORDERS]: previousOrders,
+      [STORAGE_KEYS.PREVIOUS_IPO_BIDS]: previousIpoBids
+    });
+    return true;
+  } catch (e) {
+    console.warn('[Babylon] Ledger write failed:', e.message);
+    return false;
+  }
 }
 // ---- IPO helpers (used by the detection diff) ------------------------------
 function ipoIdOf(offer){
@@ -1651,6 +1682,47 @@ async function setupRemoteToken() {
   }
   return null;
 }
+
+// ---- Social chat API ------------------------------------------------------
+// /api/social/* is account-scoped like every other game route, but it is not
+// player-scoped, so it hangs off ORIGIN instead of gameUrl(). A DM is just a
+// channel with kind === 'dm', so one messages reader serves chat and threads.
+const SOCIAL_API = `${ORIGIN}/social`;
+const CHAT_PAGE = 50;             // the server's own page size
+const SUMMARY_TTL = 4000;         // popup ticks every 1s; the rail does not need it that often
+let socialSummaryCache = null;    // {at, data}
+
+async function fetchSocialSummary(force) {
+  if (!force && socialSummaryCache && Date.now() - socialSummaryCache.at < SUMMARY_TTL) {
+    return socialSummaryCache.data;
+  }
+  const res = await fetch(`${SOCIAL_API}/summary`, {method:'GET', credentials:'include', headers:{'Accept':'application/json'}});
+  if (!res.ok) throw new Error(`Chat summary HTTP ${res.status}`);
+  const data = await res.json();
+  // The summary carries `self` today, but the client never relies on it, so fall
+  // back to the player id we already resolve for every game route.
+  data.selfId = data.self?.id ?? await ensurePlayerId();
+  socialSummaryCache = {at: Date.now(), data};
+  return data;
+}
+
+async function fetchSocialMessages(channelId, before) {
+  const page = `?before=${encodeURIComponent(before)}`;
+  const url = `${SOCIAL_API}/channels/${encodeURIComponent(channelId)}/messages${before ? page : ''}`;
+  const res = await fetch(url, {method:'GET', credentials:'include', headers:{'Accept':'application/json'}});
+  if (!res.ok) throw new Error(`Chat messages HTTP ${res.status}`);
+  const data = await res.json();
+  const rows = Array.isArray(data?.messages) ? data.messages : [];
+  return { messages: rows.slice(-CHAT_PAGE), hasMore: rows.length >= CHAT_PAGE };
+}
+
+async function searchSocialPlayers(q) {
+  const res = await fetch(`${SOCIAL_API}/players/search?q=${encodeURIComponent(String(q || '').slice(0, 40))}`, {method:'GET', credentials:'include', headers:{'Accept':'application/json'}});
+  if (!res.ok) throw new Error(`Player search HTTP ${res.status}`);
+  const data = await res.json();
+  return { players: (Array.isArray(data?.players) ? data.players : []).slice(0, 12) };
+}
+
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
@@ -2040,6 +2112,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         case 'FETCH_ACCESS_LOYALTY':
           sendResponse({success:true, data: await fetchAccessLoyalty()});
+          break;
+        // Social chat API — reads only in every edition
+        case 'GET_CHAT_SUMMARY':
+          sendResponse({success:true, data: await fetchSocialSummary(!!msg.force)});
+          break;
+        case 'GET_CHAT_MESSAGES':
+          sendResponse({success:true, data: await fetchSocialMessages(msg.channelId, msg.before)});
+          break;
+        case 'SEARCH_PLAYERS':
+          sendResponse({success:true, data: await searchSocialPlayers(msg.q)});
+          break;
+        // Chat is read here: the tabs render the game's channels, but posting
+        // and opening threads are writes this edition never performs.
+        case 'SEND_CHAT_MESSAGE':
+        case 'OPEN_DM_CHANNEL':
+          sendResponse({success:false, error: 'Messaging is disabled in The Babylon Portfolio Lite edition'});
           break;
         case 'GRANT_LOYALTY':
           sendResponse({success:true, result: await grantLoyalty(msg.points)});
