@@ -9,6 +9,15 @@
     expectedAnnualDiv: document.getElementById('expectedAnnualDiv'),
     holdingsCount: document.getElementById('holdingsCount'),
     ordersCount: document.getElementById('ordersCount'),
+    liquidBar: document.getElementById('liquidBar'),
+    liquidTotal: document.getElementById('liquidTotal'),
+    liquidMeta: document.getElementById('liquidMeta'),
+    liquidTrack: document.getElementById('liquidTrack'),
+    liquidLegend: document.getElementById('liquidLegend'),
+    marketTape: document.getElementById('marketTape'),
+    marketTapeRun: document.getElementById('marketTapeRun'),
+    marketTapeMeta: document.getElementById('marketTapeMeta'),
+    tapeMark: document.getElementById('tapeMark'),
     overviewBody: document.getElementById('overviewBody'),
     overviewEmpty: document.getElementById('overviewEmpty'),
     overviewSearch: document.getElementById('overviewSearch'),
@@ -71,9 +80,13 @@
     remoteStatus: document.getElementById('remoteStatus'),
     // Market Analysis
     marketSearch: document.getElementById('marketSearch'),
+    marketSectorFilter: document.getElementById('marketSectorFilter'),
     marketFilter: document.getElementById('marketFilter'),
     marketScanBtn: document.getElementById('marketScanBtn'),
     marketScanStatus: document.getElementById('marketScanStatus'),
+    marketMapWrap: document.getElementById('marketMapWrap'),
+    marketTableWrap: document.getElementById('marketTableWrap'),
+    marketTreemap: document.getElementById('marketTreemap'),
     marketSummary: document.getElementById('marketSummary'),
     marketBody: document.getElementById('marketBody'),
     marketEmpty: document.getElementById('marketEmpty'),
@@ -139,14 +152,18 @@
   let currentTransactions = [];
   let currentIpoOfferings = [];
   let currentDetailCompany = null;
-  let chartInstances = {}; // companyId -> {chart, series}
+  let chartInstances = {}; // companyId -> {chart, series}; only cards near the viewport hold one
   let portfolioChartInstance = null; // {chart, series}
   let lwLoaded = false;
   let lastLoadSignature = null; // JSON of the last rendered payload; identical payload skips the render pass
   let lastLoadAt = 0; // epoch ms of the last successful GET_PORTFOLIO response
-  let chartsSignature = '';     // structure key of the charts currently drawn in the analytics grid
-  let chartBuildGeneration = 0; // bumped to abandon an in-flight progressive chart build
-  let chartBuild = null;        // {generation, sig, list, chartType} while charts stream in
+  let chartsSignature = '';     // structure key of the cards currently placed in the analytics grid
+  let chartCompanyById = new Map(); // companyId -> company for the cards currently in the grid
+  let chartSizeCache = { width: 0, height: 0 }; // measured card size; zeroed on resize
+  let chartObserver = null;     // mounts charts as cards scroll in, releases them as they scroll out
+  let chartMountQueue = [];     // ids waiting to mount, drained in 16 ms slices
+  let chartMountDraining = false;
+  const chartDisposeTimers = new Map(); // id -> deferred dispose, so edge jitter can't thrash
   let overviewSortState = { key: null, asc: true };
   let overviewFilterValue = 'value';
   let overviewSearchTerm = '';
@@ -154,16 +171,209 @@
   let holdingsSearchTerm = '';
 
   // Helpers
-  function sendMessage(msg) {
-    return new Promise(resolve => chrome.runtime.sendMessage(msg, resolve));
+  const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+
+  // Every request funnels through sendMessage, so this is the one place that
+  // has to know when the popup is waiting on the worker. The hairline appears
+  // only after 150 ms in flight and lingers 300 ms past the last reply, so a
+  // burst of quick calls reads as a single sweep instead of flicker.
+  let inflight = 0, activityShowTimer = null, activityHideTimer = null;
+  function trackActivity(delta) {
+    inflight = Math.max(0, inflight + delta);
+    if (inflight > 0) {
+      clearTimeout(activityHideTimer); activityHideTimer = null;
+      if (!activityShowTimer && !document.body.classList.contains('busy')) {
+        activityShowTimer = setTimeout(() => {
+          activityShowTimer = null;
+          if (inflight > 0) document.body.classList.add('busy');
+        }, 150);
+      }
+    } else {
+      if (activityShowTimer) { clearTimeout(activityShowTimer); activityShowTimer = null; }
+      if (document.body.classList.contains('busy')) {
+        activityHideTimer = setTimeout(() => {
+          activityHideTimer = null;
+          document.body.classList.remove('busy');
+        }, 300);
+      }
+    }
+  }
+  // silent marks work the user didn't ask for (background polls): it still goes
+  // through chrome.runtime, but it must not light the topbar hairline, or a 5 s
+  // poll would sweep the bar across the UI every few seconds.
+  function sendMessage(msg, opts) {
+    const silent = opts?.silent === true;
+    if (!silent) trackActivity(1);
+    return new Promise(resolve => chrome.runtime.sendMessage(msg, resp => {
+      if (!silent) trackActivity(-1);
+      resolve(resp);
+    }));
   }
 
+  // A stale paint means the worker answered from its last snapshot and is still
+  // fetching. Holding the hairline until the fresh payload lands makes the
+  // numbers read as "catching up" instead of leaving the user to guess whether
+  // what they see is current. The window closes early on the fresh reply and
+  // has a hard cap so a dead worker can never leave the bar running.
+  let revalidating = false, revalidateTimer = null;
+  function markRevalidating(on) {
+    if (on === revalidating) return;
+    revalidating = on;
+    trackActivity(on ? 1 : -1);
+    clearTimeout(revalidateTimer); revalidateTimer = null;
+    if (on) revalidateTimer = setTimeout(() => markRevalidating(false), 15000);
+  }
+
+  // Toasts carry a life bar, but timers decide dismissal — the bar collapses to
+  // a single frame under prefers-reduced-motion, so it must never own the
+  // lifecycle. Hovering pauses both.
+  const TOAST_ICONS = { success: '✓', error: '✕', info: 'i' };
+  const TOAST_LIFE = { success: 2600, info: 3200, error: 5200 };
+  const TOAST_MAX = 4;
+  function dismissToast(t) {
+    if (!t || t.dataset.leaving) return;
+    t.dataset.leaving = '1';
+    clearTimeout(t.__timer);
+    t.classList.add('leaving');
+    const done = () => t.remove();
+    if (reducedMotion) return done();
+    t.addEventListener('animationend', done, { once: true });
+    setTimeout(done, 400);
+  }
+  function armToast(t, ms) {
+    t.__life = ms;
+    t.__startedAt = performance.now();
+    clearTimeout(t.__timer);
+    t.__timer = setTimeout(() => dismissToast(t), ms);
+  }
   function showToast(msg, type = 'info') {
+    if (!els.toastContainer) return;
+    const life = TOAST_LIFE[type] || 3200;
+    const key = `${type}|${msg}`;
+    const prior = [...els.toastContainer.children].find(t => t.dataset.key === key && !t.dataset.leaving);
+    if (prior) {
+      // Same message again — restart its life bar instead of stacking a twin.
+      const bar = prior.querySelector('.toast-bar');
+      if (bar) { bar.style.animation = 'none'; void bar.offsetWidth; bar.style.animation = ''; bar.style.animationDuration = life + 'ms'; }
+      armToast(prior, life);
+      return;
+    }
+    while (els.toastContainer.children.length >= TOAST_MAX) els.toastContainer.firstElementChild.remove();
     const t = document.createElement('div');
     t.className = `toast ${type}`;
-    t.textContent = msg;
+    t.dataset.key = key;
+    t.setAttribute('role', type === 'error' ? 'alert' : 'status');
+    const icon = document.createElement('span');
+    icon.className = 'toast-icon';
+    icon.textContent = TOAST_ICONS[type] || 'i';
+    const body = document.createElement('span');
+    body.className = 'toast-msg';
+    body.textContent = msg;
+    const bar = document.createElement('i');
+    bar.className = 'toast-bar';
+    bar.style.animationDuration = life + 'ms';
+    t.append(icon, body, bar);
+    t.addEventListener('mouseenter', () => {
+      clearTimeout(t.__timer);
+      t.__life -= performance.now() - t.__startedAt;
+      bar.style.animationPlayState = 'paused';
+    });
+    t.addEventListener('mouseleave', () => {
+      bar.style.animationPlayState = 'running';
+      armToast(t, Math.max(800, t.__life));
+    });
     els.toastContainer.appendChild(t);
-    setTimeout(() => { t.style.animation = 'toastIn .2s ease reverse'; setTimeout(() => t.remove(), 200); }, 3000);
+    armToast(t, life);
+  }
+
+  // Stat numbers roll to their new value in 320 ms. The WeakMap keeps one
+  // running tween per element so overlapping polls can't fight over the text.
+  const numberTweens = new WeakMap();
+  function tweenNumber(el, to, format) {
+    if (!el) return;
+    const target = Number(to) || 0;
+    const active = numberTweens.get(el);
+    if (active) cancelAnimationFrame(active.raf);
+    const start = active ? active.value : (el.__tweenValue ?? target);
+    el.__tweenValue = target;
+    if (reducedMotion || start === target) { numberTweens.delete(el); el.textContent = format(target); return; }
+    const t0 = performance.now(), dur = 320;
+    const step = now => {
+      const p = Math.min(1, (now - t0) / dur);
+      const eased = 1 - Math.pow(1 - p, 3);
+      const v = start + (target - start) * eased;
+      el.textContent = format(v);
+      if (p < 1) numberTweens.set(el, { raf: requestAnimationFrame(step), value: v });
+      else { numberTweens.delete(el); el.textContent = format(target); }
+    };
+    numberTweens.set(el, { raf: requestAnimationFrame(step), value: start });
+  }
+  function fmtCount(n) { return Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 }); }
+
+  // Rows are rebuilt on every render, so the flash diff compares against the
+  // previous payload rather than the previous DOM.
+  const cellSnapshots = new Map();
+  function flashChangedCells(tbody, snapshotKey) {
+    if (!tbody) return;
+    const prev = cellSnapshots.get(snapshotKey);
+    const next = new Map();
+    for (const tr of tbody.children) {
+      const key = tr.dataset.companyId || tr.dataset.name;
+      if (!key) continue;
+      const price = Number(tr.dataset.price);
+      const value = Number(tr.dataset.value);
+      next.set(key, { price, value });
+      const before = prev?.get(key);
+      if (!before || reducedMotion) continue;
+      const priceCell = tr.querySelector('[data-cell="price"]');
+      const valueCell = tr.querySelector('[data-cell="value"]');
+      if (priceCell && isFinite(price) && isFinite(before.price) && price !== before.price) {
+        priceCell.classList.add(price > before.price ? 'flash-up' : 'flash-down');
+      }
+      if (valueCell && isFinite(value) && isFinite(before.value) && value !== before.value) {
+        valueCell.classList.add(value > before.value ? 'flash-up' : 'flash-down');
+      }
+    }
+    cellSnapshots.set(snapshotKey, next);
+  }
+
+  function paintSkeletonRows(tbody, cols, rows = 6) {
+    if (!tbody) return;
+    tbody.innerHTML = Array.from({ length: rows }, () =>
+      `<tr class="skel-row">${Array.from({ length: cols }, (_, i) =>
+        `<td><span class="skel-bar" style="width:${i === 1 ? 132 : 46 + (i % 4) * 16}px"></span></td>`).join('')}</tr>`
+    ).join('');
+  }
+
+  // Async buttons keep their label and swap in a stepped spinner, so a row of
+  // controls never reflows mid-click.
+  async function withBusy(btn, fn) {
+    if (!btn) return;
+    const wasDisabled = btn.disabled;
+    btn.disabled = true;
+    btn.classList.add('busy');
+    try { return await fn(); }
+    finally { btn.classList.remove('busy'); btn.disabled = wasDisabled; }
+  }
+
+  // Overlays fade the scrim and drop the panel on open; closing runs the
+  // reverse before the element is hidden, so a click never snaps the panel away.
+  function openOverlay(el) {
+    if (!el) return;
+    el.classList.remove('closing');
+    el.classList.remove('hidden');
+  }
+  function closeOverlay(el) {
+    if (!el || el.classList.contains('hidden') || el.classList.contains('closing')) return;
+    if (reducedMotion) { el.classList.add('hidden'); return; }
+    el.classList.add('closing');
+    const finish = () => {
+      if (!el.classList.contains('closing')) return;
+      el.classList.remove('closing');
+      el.classList.add('hidden');
+    };
+    el.addEventListener('animationend', finish, { once: true });
+    setTimeout(finish, 320);
   }
 
   function fmt(n) {
@@ -221,6 +431,7 @@
     // Unhide first: drawSpark sizes the canvas from clientWidth, which is 0
     // while the overlay is still display:none.
     els.detailOverlay.classList.remove('hidden');
+    els.detailOverlay.classList.remove('closing');
     els.detailName.textContent = company.name;
     els.detailSymbol.textContent = company.symbol || '';
     els.detailPrice.textContent = '$' + company.currentPrice.toLocaleString();
@@ -301,17 +512,240 @@
   }
 
   function closeDetail() {
-    els.detailOverlay.classList.add('hidden');
+    closeOverlay(els.detailOverlay);
   }
   els.detailClose.addEventListener('click', closeDetail);
   els.detailOverlay.addEventListener('click', e => { if (e.target === els.detailOverlay) closeDetail(); });
 
   // Tabs
-  els.tabBtns.forEach(btn => btn.addEventListener('click', () => {
-    const tab = btn.dataset.tab;
-    els.tabBtns.forEach(b => b.classList.toggle('active', b === btn));
+  function activateTab(tab, { focusBtn = false } = {}) {
+    const btn = [...els.tabBtns].find(b => b.dataset.tab === tab);
+    if (!btn) return;
+    els.tabBtns.forEach(b => {
+      const on = b === btn;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
     els.panels.forEach(p => p.classList.toggle('active', p.id === `panel-${tab}`));
-  }));
+    if (typeof btn.scrollIntoView === 'function') {
+      try { btn.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: reducedMotion ? 'auto' : 'smooth' }); }
+      catch (e) { btn.scrollIntoView(); }
+    }
+    const main = document.querySelector('.main');
+    if (main) main.scrollTop = 0;
+    if (focusBtn) btn.focus({ preventScroll: true });
+  }
+  els.tabBtns.forEach(btn => btn.addEventListener('click', () => activateTab(btn.dataset.tab)));
+
+  // Keyboard layer — tab semantics, arrow-key cycling, "/" search, Escape
+  els.tabBtns.forEach(btn => {
+    btn.setAttribute('role', 'tab');
+    btn.setAttribute('aria-selected', btn.classList.contains('active') ? 'true' : 'false');
+  });
+  els.panels.forEach(p => p.setAttribute('role', 'tabpanel'));
+  const tabStrip = document.querySelector('.tabs');
+  if (tabStrip && tabStrip.setAttribute) tabStrip.setAttribute('role', 'tablist');
+
+  const PANEL_SEARCH = { overview: 'overviewSearch', holdings: 'holdingsSearch', market: 'marketSearch', economy: 'economySearch' };
+
+  function activeTabName() {
+    return document.querySelector('.tab-btn.active')?.dataset.tab || 'overview';
+  }
+
+  function cycleTab(step) {
+    const list = [...els.tabBtns];
+    if (!list.length) return;
+    const i = Math.max(0, list.findIndex(b => b.classList.contains('active')));
+    const next = list[(i + step + list.length) % list.length];
+    if (next) activateTab(next.dataset.tab, { focusBtn: true });
+  }
+
+  function focusPanelSearch() {
+    const id = PANEL_SEARCH[activeTabName()];
+    const input = id && document.getElementById(id);
+    if (!input || input.getClientRects().length === 0) return false;
+    input.focus();
+    if (typeof input.select === 'function') input.select();
+    return true;
+  }
+
+  function openOverlayEl() {
+    return [els.detailOverlay, els.marketDetailOverlay]
+      .find(el => el && !el.classList.contains('hidden')) || null;
+  }
+
+  document.addEventListener('keydown', e => {
+    const t = e.target;
+    const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable === true);
+
+    if (e.key === 'Escape') {
+      const ov = openOverlayEl();
+      if (ov) { e.preventDefault(); closeOverlay(ov); return; }
+      // Panel searches clear themselves on Escape; a second press leaves the field.
+      if (typing && !t.value) t.blur();
+      return;
+    }
+
+    if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
+
+    if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && t && t.classList && t.classList.contains('tab-btn')) {
+      e.preventDefault();
+      cycleTab(e.key === 'ArrowRight' ? 1 : -1);
+      return;
+    }
+
+    if (e.key === '/' && focusPanelSearch()) e.preventDefault();
+  });
+
+  // Topbar elevation while content scrolls beneath it
+  const scrollHost = document.querySelector('.main');
+  const topbarEl = document.querySelector('.topbar');
+  if (scrollHost && topbarEl) {
+    const syncElevation = () => topbarEl.classList.toggle('elevated', scrollHost.scrollTop > 2);
+    scrollHost.addEventListener('scroll', syncElevation, { passive: true });
+    syncElevation();
+  }
+
+  /* ── Live market tape ───────────────────────────────────────────────
+     Ticker sign, name, price and 24h change for every listed company,
+     crawling across the top of the UI. It rides the existing portfolio
+     poll instead of adding a fetch of its own: prices are patched in place
+     because rebuilding the run would restart the crawl animation. */
+  const TAPE_SPEED = 26;                     // px per second — the resting crawl
+  const TAPE_SPEED_MAX = 120;                // ceiling, above which a ticker is a blur
+  const TAPE_SWEEP_S = 45;                   // every listing must pass once within this
+  const TAPE_STEP = 4;                       // px per frame — the 8-bit stutter
+  const TAPE_STALE_MS = 90000;
+  const tapePrices = new Map();
+  let tapeSig = '';
+
+  // The game exposes no ticker field (symbol mirrors the name), so the tape
+  // derives the sign from the name the way an exchange board does.
+  function tickerOf(name) {
+    const words = String(name || '').match(/[A-Za-z0-9]+/g) || [];
+    if (!words.length) return '—';
+    return (words.length > 1 ? words.map(w => w[0]).join('') : words[0]).slice(0, 5).toUpperCase();
+  }
+
+  function tapePriceText(c) {
+    return `$${Number(c.currentPrice || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+
+  function tapeChangeText(c) {
+    const pct = Number(c.changePct || 0);
+    return `${pct > 0 ? '▲ +' : (pct < 0 ? '▼ ' : '· ')}${pct.toFixed(2)}%`;
+  }
+
+  function tapeDir(c) {
+    const pct = Number(c.changePct || 0);
+    return pct > 0 ? 'up' : (pct < 0 ? 'down' : 'flat');
+  }
+
+  function tapeItemHtml(c) {
+    return `<span class="ti ti-${tapeDir(c)}" data-cid="${escapeText(String(c.id))}">`
+      + `<b>${escapeText(tickerOf(c.name))}</b>`
+      + `<span class="ti-nm">${escapeText(c.name || '')}</span>`
+      + `<span class="ti-px">${escapeText(tapePriceText(c))}</span>`
+      + `<em class="ti-ch">${escapeText(tapeChangeText(c))}</em>`
+      + `</span><span class="ti-sep">¦</span>`;
+  }
+
+  // Two identical sets let the run crawl to translateX(-50%) and wrap without
+  // a seam; the set itself repeats enough times to always cover the window.
+  function fitTape() {
+    const run = els.marketTapeRun;
+    const list = currentCompanies;
+    if (!run || !list.length) return;
+    const sig = list.map(c => c.id).join('|');
+    const view = run.parentElement;
+    const group = list.map(tapeItemHtml).join('');
+    run.innerHTML = `<span class="tape-set">${group}</span>`;
+    const groupW = run.firstElementChild?.offsetWidth || 0;
+    // The signature is only committed once the run has actually been measured:
+    // a hidden topbar reports 0, and claiming the fit then would leave a single,
+    // unscrolling set on screen for the rest of the session.
+    if (!groupW) return;
+    const reps = Math.max(1, Math.ceil((view.clientWidth || 640) / groupW));
+    const setHtml = `<span class="tape-set">${group.repeat(reps)}</span>`;
+    run.innerHTML = setHtml + setHtml;
+    const setW = run.firstElementChild?.offsetWidth || 0;
+    if (!setW) return;
+    tapeSig = sig;
+    // Pace the crawl off one complete board (groupW), not off the padded set: a
+    // fixed px-per-second made a real-sized market take minutes per pass, so most
+    // listings never crossed the window during a session. Wider boards now run
+    // faster, up to the point where a ticker stops being readable.
+    const pxPerSec = Math.min(TAPE_SPEED_MAX, Math.max(TAPE_SPEED, groupW / TAPE_SWEEP_S));
+    run.style.animationDuration = `${(setW / pxPerSec).toFixed(2)}s`;
+    run.style.animationTimingFunction = `steps(${Math.max(16, Math.round(setW / TAPE_STEP))}, end)`;
+    if (reducedMotion) els.marketTape.classList.add('hold');
+  }
+
+  function patchTapePrices(list) {
+    const run = els.marketTapeRun;
+    if (!run.children.length) return;
+    const byId = new Map(list.map(c => [String(c.id), c]));
+    const moved = [];
+    for (const el of run.querySelectorAll('.ti')) {
+      const c = byId.get(el.dataset.cid);
+      if (!c) continue;
+      const price = el.querySelector('.ti-px');
+      const change = el.querySelector('.ti-ch');
+      const next = tapePriceText(c);
+      const prev = tapePrices.get(String(c.id));
+      if (price && price.textContent !== next) {
+        price.textContent = next;
+        if (change) change.textContent = tapeChangeText(c);
+        el.className = `ti ti-${tapeDir(c)}`;
+        if (prev !== undefined && prev !== c.currentPrice) moved.push([el, prev < c.currentPrice ? 'rgba(74,222,128,.34)' : 'rgba(248,113,113,.34)']);
+      }
+      tapePrices.set(String(c.id), c.currentPrice);
+    }
+    // Element.animate rather than a class: the flash must re-fire on every
+    // change, and a forced reflow to restart a CSS animation would stutter the
+    // crawl on every copy of the set.
+    if (!reducedMotion) for (const [el, color] of moved) el.animate([{ backgroundColor: color }, { backgroundColor: 'rgba(0,0,0,0)' }], { duration: 900, easing: 'steps(3,end)' });
+  }
+
+  function syncTapeMark() {
+    const live = !!lastLoadAt && Date.now() - lastLoadAt < TAPE_STALE_MS;
+    els.tapeMark.textContent = live ? 'LIVE' : 'STALE';
+    els.marketTape.classList.toggle('stale', !live);
+    if (!els.marketTapeMeta) return;
+    const up = currentCompanies.filter(c => Number(c.changePct) > 0).length;
+    const down = currentCompanies.filter(c => Number(c.changePct) < 0).length;
+    els.marketTapeMeta.textContent = `${currentCompanies.length} listed · ${up} up · ${down} down`;
+  }
+
+  function renderTape() {
+    if (!els.marketTape || !els.marketTapeRun) return;
+    if (!currentCompanies.length) {
+      els.marketTape.style.display = 'none';
+      els.marketTapeRun.innerHTML = '';
+      tapeSig = '';
+      return;
+    }
+    els.marketTape.style.display = 'flex';
+    // The label column shares the row with the viewport, so its text has to be
+    // final before fitTape measures how much width the crawl actually gets.
+    syncTapeMark();
+    const sig = currentCompanies.map(c => c.id).join('|');
+    if (sig !== tapeSig) fitTape();
+    patchTapePrices(currentCompanies);
+  }
+
+  // The LIVE / STALE badge has to age even when a poll comes back identical,
+  // so it gets its own cheap tick instead of waiting for a re-render.
+  if (els.marketTape) setInterval(() => {
+    if (currentCompanies.length && els.marketTape.style.display !== 'none') syncTapeMark();
+  }, 5000);
+
+  // The sets are sized from the width of whatever face is painted at fit time.
+  // If a webfont lands later and is narrower, the sets can end up shorter than
+  // the window, which shows as a gap mid-crawl — so re-fit once they settle.
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => {
+    if (currentCompanies.length && els.marketTape.style.display !== 'none') fitTape();
+  });
 
   function populateCompanies(companies) {
     currentCompanies = companies;
@@ -362,14 +796,15 @@
       const holdingValue = h ? h.value : 0;
       return `<tr data-company-id="${c.id}" data-name="${c.name.toLowerCase()}" data-symbol="${(c.symbol || '').toLowerCase()}" data-price="${c.currentPrice}" data-change="${c.changePct}" data-yield="${c.yieldPct}" data-owned="${h ? h.owned : 0}" data-value="${h ? h.value : 0}" data-pct="${h ? h.percentage : 0}" data-mcap="${marketCap}" style="cursor:pointer;">
         <td><span class="company-name">${c.name}</span>${h ? '<span class="own-badge">OWN</span>' : ''}</td>
-        <td class="price-cell">$${c.currentPrice.toLocaleString()}</td>
+        <td class="price-cell" data-cell="price">$${c.currentPrice.toLocaleString()}</td>
         <td class="change-cell ${changeClass}">${c.changePct >= 0 ? '+' : ''}${c.changePct.toFixed(2)}%</td>
         <td>${c.yieldPct.toFixed(1)}%</td>
         <td>${h ? fmtNum(h.owned) : '—'}</td>
-        <td class="value-cell">${h ? fmt(h.value) : '—'}</td>
+        <td class="value-cell" data-cell="value">${h ? fmt(h.value) : '—'}</td>
         <td class="pct-cell">${h ? fmtPct(h.percentage) : '—'}</td>
       </tr>`;
     }).join('');
+    flashChangedCells(els.overviewBody, 'overview');
     restoreOverviewSort();
     restoreOverviewFilter();
     applySearch(els.overviewBody, els.overviewEmpty, overviewSearchTerm);
@@ -495,17 +930,21 @@
     els.holdingsEmpty.style.display = 'none';
     els.holdingsBody.innerHTML = holdings.map(h => {
       const divPerShare = h.dividendPerShare || (h.currentPrice * h.yieldPct / 100);
-      return `<tr data-name="${h.name.toLowerCase()}" data-symbol="${(h.symbol || '').toLowerCase()}" data-owned="${h.owned}" data-price="${h.currentPrice}" data-backing="${h.backing}" data-value="${h.value}" data-pct="${h.percentage}" data-yield="${h.yieldPct}" data-div="${h.dividendIncome || 0}">
+      const chg = Number(h.changePct) || 0;
+      const chgCls = chg >= 0 ? 'positive' : 'negative';
+      return `<tr data-name="${h.name.toLowerCase()}" data-symbol="${(h.symbol || '').toLowerCase()}" data-owned="${h.owned}" data-price="${h.currentPrice}" data-change="${chg}" data-backing="${h.backing}" data-value="${h.value}" data-pct="${h.percentage}" data-yield="${h.yieldPct}" data-div="${h.dividendIncome || 0}">
       <td><span class="company-name">${h.name}</span><span class="company-symbol">${h.symbol}</span><span class="own-badge">OWN</span></td>
       <td>${fmtNum(h.owned)}</td>
-      <td class="price-cell">$${h.currentPrice.toLocaleString()}</td>
+      <td class="price-cell" data-cell="price">$${h.currentPrice.toLocaleString()}</td>
+      <td class="change-cell ${chgCls}" title="24h price change · ${fmt(Math.abs(h.owned * h.currentPrice * chg / (100 + chg)))} on your position">${chg >= 0 ? '▲' : '▼'} ${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</td>
       <td>$${h.backing.toLocaleString()}</td>
-      <td class="value-cell">${fmt(h.value)}</td>
+      <td class="value-cell" data-cell="value">${fmt(h.value)}</td>
       <td class="pct-cell">${fmtPct(h.percentage)}</td>
       <td>${h.yieldPct.toFixed(1)}%</td>
       <td class="div-cell">${fmt(h.dividendIncome)} (${fmt(divPerShare)}/share)</td>
     </tr>`;
     }).join('');
+    flashChangedCells(els.holdingsBody, 'holdings');
     restoreHoldingsSort();
     applySearch(els.holdingsBody, els.holdingsEmpty, holdingsSearchTerm);
     renderPortfolioChart();
@@ -992,75 +1431,124 @@
       // tear down and rebuild every LightweightCharts instance.
       const sig = `${chartType}|${tf}|${fulltab}|${companies.map(c => c.id).join(',')}`;
 
-      // A build for this same structure may still be streaming charts in; keep
-      // it running with the fresher list instead of cancelling and restarting.
-      if (chartBuild && chartBuild.sig === sig) {
-        chartBuild.list = companies;
-        companies.forEach(c => { if (chartInstances[c.id]) refreshChartCard(c); });
-        return;
-      }
-
+      // Same structure → the cards already in the grid are the right ones. Push
+      // the fresh numbers into them and leave the DOM (and every mounted chart)
+      // exactly where it is.
       const reusable = sig === chartsSignature
-        && Object.keys(chartInstances).length === companies.length
-        && companies.every(c => chartInstances[c.id]?.chartContainer?.isConnected);
+        && chartCompanyById.size === companies.length
+        && companies.every(c => !!document.getElementById(`chart-${c.id}`));
       if (reusable) {
         companies.forEach(c => refreshChartCard(c));
         return;
       }
       clearChartGrid();
       chartsSignature = sig;
-      startChartBuild(sig, companies, chartType);
+      startChartBuild(sig, companies);
     }
   }
 
-  // Tear down every chart card and instance, and abandon any in-flight build.
+  // Tear down every chart card and instance, drop the observer and any queued
+  // mount or dispose work, so nothing can resurrect a chart for a dead grid.
   function clearChartGrid() {
-    chartBuildGeneration++;
-    chartBuild = null;
+    if (chartObserver) { chartObserver.disconnect(); chartObserver = null; }
+    chartMountQueue.length = 0;
+    chartDisposeTimers.forEach(t => clearTimeout(t));
+    chartDisposeTimers.clear();
     Object.keys(chartInstances).forEach(id => {
       if (chartInstances[id].chart) chartInstances[id].chart.remove();
       delete chartInstances[id];
     });
+    chartCompanyById = new Map();
+    chartSizeCache.width = 0;
     els.analyticsChartsGrid.innerHTML = '';
     chartsSignature = '';
   }
 
-  // Building every chart in one pass blocks the popup for a second or more at
-  // real market size (each LightweightCharts instance costs several ms), so the
-  // card shells go in with a single DOM write and the charts themselves stream
-  // in short slices that hand the main thread back between batches.
-  function startChartBuild(sig, companies, chartType) {
+  // A LightweightCharts instance costs several canvases and a few ms to build,
+  // so at real market size the grid only keeps instances for the cards near the
+  // viewport: the shells go in with one DOM write, an observer rooted on the
+  // scroll host mounts what is in range, and cards that scroll far out release
+  // theirs. A 60-company grid then holds ~6 live charts instead of 60.
+  const CHART_MOUNT_MARGIN = '1500px 0px';
+  const CHART_DISPOSE_GRACE_MS = 900;
+
+  function currentChartType() { return els.analyticsChartType?.value || 'candlestick'; }
+
+  function measuredChartSize() {
+    if (!chartSizeCache.width) {
+      const wrap = els.analyticsChartsGrid.querySelector('.chart-canvas-wrap');
+      chartSizeCache.width = wrap?.clientWidth || 0;
+      chartSizeCache.height = wrap?.clientHeight || (document.body.classList.contains('fulltab') ? 364 : 284);
+    }
+    return chartSizeCache;
+  }
+
+  function startChartBuild(sig, companies) {
     if (typeof LightweightCharts === 'undefined') return;
-    const generation = ++chartBuildGeneration;
-    chartBuild = { generation, sig, list: companies, chartType, width: 0, height: 0 };
-
     els.analyticsChartsGrid.innerHTML = companies.map(chartCardHtml).join('');
+    chartCompanyById = new Map(companies.map(c => [c.id, c]));
+    chartSizeCache.width = 0;
+    const observer = ensureChartObserver();
+    els.analyticsChartsGrid.querySelectorAll('.chart-card').forEach(card => observer.observe(card));
+    attachChartClicks();
+  }
 
-    let i = 0;
-    const step = () => {
-      if (generation !== chartBuildGeneration) return;
-      // Measure at most once per build: reading clientWidth forces a layout
-      // flush, and there is nothing to flush mid-build anyway (the new canvases
-      // are only painted after the build yields). The resize handler zeroes
-      // width so a mid-build resize re-measures on the next slice.
-      if (!chartBuild.width) {
-        const wrap = els.analyticsChartsGrid.querySelector('.chart-canvas-wrap');
-        chartBuild.width = wrap?.clientWidth || 0;
-        chartBuild.height = wrap?.clientHeight || (document.body.classList.contains('fulltab') ? 364 : 284);
-      }
-      const deadline = performance.now() + 16;
-      while (i < chartBuild.list.length && performance.now() < deadline) {
-        createChartFor(chartBuild.list[i], chartBuild.chartType, chartBuild.width, chartBuild.height);
-        i++;
-      }
-      if (i < chartBuild.list.length) {
-        setTimeout(step, 0);
-      } else {
-        chartBuild = null;
-        attachChartClicks();
-      }
+  function ensureChartObserver() {
+    if (chartObserver) return chartObserver;
+    chartObserver = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        const id = entry.target.dataset.chartId;
+        if (!id) return;
+        entry.target.dataset.near = entry.isIntersecting ? '1' : '';
+        if (entry.isIntersecting) {
+          const timer = chartDisposeTimers.get(id);
+          if (timer) { clearTimeout(timer); chartDisposeTimers.delete(id); }
+          queueChartMount(id);
+        } else if (chartInstances[id] && !chartDisposeTimers.has(id)) {
+          // Grace period: a one-row overshoot or a scroll jitter at the band
+          // edge must not dispose a chart the user is about to scroll back to.
+          chartDisposeTimers.set(id, setTimeout(() => {
+            chartDisposeTimers.delete(id);
+            if (entry.target.dataset.near !== '1') unmountChart(id);
+          }, CHART_DISPOSE_GRACE_MS));
+        }
+      });
+    }, { root: document.querySelector('.main') || null, rootMargin: CHART_MOUNT_MARGIN, threshold: 0 });
+    return chartObserver;
+  }
+
+  // Mounts run in short slices: one observer batch can hand over a screenful of
+  // cards, and building them all in a single task would drop the frame.
+  function queueChartMount(id) {
+    if (chartInstances[id] || chartMountQueue.includes(id)) return;
+    chartMountQueue.push(id);
+    if (chartMountDraining) return;
+    chartMountDraining = true;
+    const slice = () => {
+      const deadline = performance.now() + 14;
+      while (chartMountQueue.length && performance.now() < deadline) mountChart(chartMountQueue.shift());
+      if (chartMountQueue.length) setTimeout(slice, 0);
+      else chartMountDraining = false;
     };
-    step();
+    slice();
+  }
+
+  function mountChart(id) {
+    const company = chartCompanyById.get(id);
+    const card = document.getElementById(`chart-${id}`)?.closest('.chart-card');
+    if (!company || !card || chartInstances[id] || card.dataset.near !== '1') return;
+    const size = measuredChartSize();
+    if (!size.width) return;
+    createChartFor(company, currentChartType(), size.width, size.height);
+  }
+
+  function unmountChart(id) {
+    const inst = chartInstances[id];
+    if (!inst) return;
+    delete chartInstances[id];
+    const card = inst.card || document.getElementById(`chart-${id}`)?.closest('.chart-card');
+    if (card) { delete card.dataset.mounted; card.classList.add('chart-idle'); }
+    try { inst.chart.remove(); } catch (e) { /* already removed */ }
   }
 
   let lwScriptPromise = null;
@@ -1125,15 +1613,15 @@
   // anchor, and the spark itself. Unchanged → the canvas is left alone, so a
   // poll where nothing moved costs no chart redraws at all.
   function chartDataSig(company) {
-    const chartType = els.analyticsChartType?.value || 'candlestick';
     const tf = els.analyticsTimeframe?.value || '24h';
-    return `${chartType}|${tf}|${Math.floor(Date.now() / 3600000)}|${(company.spark || []).join(',')}`;
+    return `${currentChartType()}|${tf}|${Math.floor(Date.now() / 3600000)}|${(company.spark || []).join(',')}`;
   }
 
-  // In-place refresh of an existing chart card: same structure, new numbers.
+  // In-place refresh of a chart card: same structure, new numbers. The header
+  // updates for every card; only mounted cards touch a chart instance, and the
+  // rest pick the fresh company up from chartCompanyById when they mount.
   function refreshChartCard(company) {
-    const inst = chartInstances[company.id];
-    if (!inst) return;
+    chartCompanyById.set(company.id, company);
     try {
       const priceEl = document.getElementById(`price-${company.id}`);
       if (priceEl) priceEl.textContent = '$' + company.currentPrice.toLocaleString();
@@ -1145,6 +1633,8 @@
       const yieldEl = document.getElementById(`yield-${company.id}`);
       if (yieldEl) yieldEl.textContent = `Yield: ${company.yieldPct.toFixed(2)}%`;
 
+      const inst = chartInstances[company.id];
+      if (!inst) return;
       const sig = chartDataSig(company);
       if (sig === inst.dataSig) return;
       inst.dataSig = sig;
@@ -1164,7 +1654,7 @@
 
   function chartCardHtml(company) {
     return `
-      <div class="chart-card">
+      <div class="chart-card chart-idle" data-chart-id="${company.id}">
         <div class="chart-header">
           <div>
             <div class="chart-title">${company.name}</div>
@@ -1234,6 +1724,7 @@
       chart.timeScale().fitContent();
 
       chartInstances[company.id] = {chart, series, card, chartContainer, dataSig: chartDataSig(company), spanKey: data.length ? `${data[0].time}|${data[data.length - 1].time}` : ''};
+      if (card) { card.classList.remove('chart-idle'); card.dataset.mounted = '1'; }
     } catch (e) {
       console.error('[Babylon] Chart error for', company.name, e);
     }
@@ -1325,10 +1816,10 @@
         expectedAnnual += h.owned * (h.currentPrice * h.yieldPct / 100);
       }
     }
-    els.totalValue.textContent = fmt(totalValue);
-    els.expectedAnnualDiv.textContent = fmt(expectedAnnual);
-    els.holdingsCount.textContent = holdings.length;
-    els.ordersCount.textContent = ordersCount;
+    tweenNumber(els.totalValue, totalValue, fmt);
+    tweenNumber(els.expectedAnnualDiv, expectedAnnual, fmt);
+    tweenNumber(els.holdingsCount, holdings.length, fmtCount);
+    tweenNumber(els.ordersCount, ordersCount, fmtCount);
 
     // Calculate 24h portfolio value change
     if (els.totalValueProgress && Array.isArray(holdings) && holdings.length > 0) {
@@ -1422,17 +1913,46 @@
     if (DATA_TABS.includes(tab)) renderTab(tab);
   }
 
+  // First paint only: if the worker takes longer than a blink, hold the table
+  // behind pixel skeletons rather than an empty state that reads as "no data".
+  const SKELETON_COLS = { overview: 7, holdings: 9 };
+  let skeletonTimer = null;
+  function paintSkeletons() {
+    document.body.dataset.skeleton = '1';
+    const tab = activeTabId();
+    const cols = SKELETON_COLS[tab];
+    if (!cols) return;
+    const tbody = tab === 'overview' ? els.overviewBody : els.holdingsBody;
+    const emptyEl = tab === 'overview' ? els.overviewEmpty : els.holdingsEmpty;
+    if (emptyEl) emptyEl.style.display = 'none';
+    paintSkeletonRows(tbody, cols);
+  }
+  function clearSkeletons() {
+    if (!document.body.dataset.skeleton) return;
+    delete document.body.dataset.skeleton;
+    const tab = activeTabId();
+    if (SKELETON_COLS[tab]) {
+      const tbody = tab === 'overview' ? els.overviewBody : els.holdingsBody;
+      if (tbody) tbody.innerHTML = '';
+    }
+  }
+
   async function loadDataNow(force) {
+    if (!lastData && !reducedMotion) skeletonTimer = setTimeout(paintSkeletons, 180);
     try {
       const resp = await sendMessage({ type: 'GET_PORTFOLIO', force: !!force });
-      if (!resp.success) { showToast('Load failed: ' + resp.error, 'error'); return; }
+      clearTimeout(skeletonTimer); skeletonTimer = null;
+      if (!resp.success) { clearSkeletons(); markRevalidating(false); showToast('Load failed: ' + resp.error, 'error'); return; }
+      // Paint first, catch up behind: a stale reply is the snapshot while the
+      // worker refetches. The PORTFOLIO_UPDATED broadcast reloads this view.
+      markRevalidating(!!resp.stale);
       const data = resp.data;
       lastLoadAt = Date.now();
       const { companies, holdings, totalValue, dividends, totalDividends, transactions, orders, ipoOfferings } = data;
       // Signature covers only what the popup renders — the payload used to be
       // stringified whole, including the raw API dump, on every tick.
       const sig = JSON.stringify([companies, holdings, totalValue, dividends, totalDividends, transactions, orders, ipoOfferings]);
-      if (sig === lastLoadSignature) return;
+      if (sig === lastLoadSignature) { clearSkeletons(); return; }
       lastLoadSignature = sig;
       lastData = {
         companies, holdings, totalValue, dividends, totalDividends,
@@ -1445,28 +1965,31 @@
       currentOrders = lastData.orders;
       currentIpoOfferings = lastData.ipoOfferings;
       populateCompanies(companies);
+      // Called from the load path, not from populateCompanies: the read-only
+      // builds strip that function down to its state assignment.
+      renderTape();
       renderSummary(totalValue, holdings, lastData.orders.length);
       renderVisiblePanels();
-    } catch (e) { console.error(e); showToast('Load error: ' + e.message, 'error'); }
+      clearSkeletons();
+    } catch (e) {
+      clearTimeout(skeletonTimer); skeletonTimer = null;
+      clearSkeletons();
+      markRevalidating(false);
+      console.error(e); showToast('Load error: ' + e.message, 'error');
+    }
   }
 
-  els.refreshBtn.addEventListener('click', async () => {
-    els.refreshBtn.disabled = true; els.refreshBtn.textContent = 'Loading…';
+  els.refreshBtn.addEventListener('click', () => withBusy(els.refreshBtn, async () => {
     await loadData({ force: true });
-    els.refreshBtn.disabled = false; els.refreshBtn.textContent = 'Refresh';
     showToast('Refreshed', 'info');
-  });
+  }));
 
 
   // Analytics Refresh
-  els.analyticsRefreshBtn.addEventListener('click', async () => {
-    els.analyticsRefreshBtn.disabled = true;
-    els.analyticsRefreshBtn.textContent = 'Loading…';
+  els.analyticsRefreshBtn.addEventListener('click', () => withBusy(els.analyticsRefreshBtn, async () => {
     await loadData({ force: true });
-    els.analyticsRefreshBtn.disabled = false;
-    els.analyticsRefreshBtn.textContent = 'Refresh';
     showToast('Analytics refreshed', 'info');
-  });
+  }));
 
   // Timeframe change — re-render charts with sliced data
   els.analyticsTimeframe.addEventListener('change', () => {
@@ -1504,18 +2027,52 @@
         const toAsc = th.classList.contains('sorted-desc');
         thead.querySelectorAll('th.sortable').forEach(x => x.classList.remove('sorted-asc', 'sorted-desc'));
         th.classList.add(toAsc ? 'sorted-asc' : 'sorted-desc');
-        const rows = Array.from(tbody.querySelectorAll('tr'));
-        rows.sort((a, b) => {
-          if (key === 'name') {
-            const av = (a.dataset.name || '').toLowerCase();
-            const bv = (b.dataset.name || '').toLowerCase();
-            return toAsc ? av.localeCompare(bv) : bv.localeCompare(av);
-          }
-          const av = parseFloat(a.dataset[key] || 0);
-          const bv = parseFloat(b.dataset[key] || 0);
-          return toAsc ? av - bv : bv - av;
-        });
-        rows.forEach(r => tbody.appendChild(r));
+        const allRows = Array.from(tbody.querySelectorAll('tr'));
+        // Check if this table has sector headers (market tab).
+        const hasSectorHeaders = allRows.some(r => r.classList.contains('market-sector-header'));
+        if (hasSectorHeaders) {
+          // Group rows by sector: header + its data rows, sort data rows within each group.
+          const groups = [];
+          let currentGroup = null;
+          allRows.forEach(r => {
+            if (r.classList.contains('market-sector-header')) {
+              currentGroup = { header: r, dataRows: [] };
+              groups.push(currentGroup);
+            } else if (currentGroup) {
+              currentGroup.dataRows.push(r);
+            }
+          });
+          groups.forEach(g => {
+            g.dataRows.sort((a, b) => {
+              if (key === 'name') {
+                const av = (a.dataset.name || '').toLowerCase();
+                const bv = (b.dataset.name || '').toLowerCase();
+                return toAsc ? av.localeCompare(bv) : bv.localeCompare(av);
+              }
+              const av = parseFloat(a.dataset[key] || 0);
+              const bv = parseFloat(b.dataset[key] || 0);
+              return toAsc ? av - bv : bv - av;
+            });
+          });
+          // Re-append in order: header, then its sorted data rows.
+          groups.forEach(g => {
+            tbody.appendChild(g.header);
+            g.dataRows.forEach(r => tbody.appendChild(r));
+          });
+        } else {
+          // Original flat sort for tables without sector headers.
+          allRows.sort((a, b) => {
+            if (key === 'name') {
+              const av = (a.dataset.name || '').toLowerCase();
+              const bv = (b.dataset.name || '').toLowerCase();
+              return toAsc ? av.localeCompare(bv) : bv.localeCompare(av);
+            }
+            const av = parseFloat(a.dataset[key] || 0);
+            const bv = parseFloat(b.dataset[key] || 0);
+            return toAsc ? av - bv : bv - av;
+          });
+          allRows.forEach(r => tbody.appendChild(r));
+        }
         if (table.closest('#panel-overview')) {
           overviewSortState = { key, asc: toAsc };
         } else if (table.closest('#panel-holdings')) {
@@ -1773,8 +2330,9 @@
     applyFullTabMode();
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
-      // A resize during a streaming chart build invalidates its cached size.
-      if (chartBuild) chartBuild.width = 0;
+      // A resize invalidates the cached card size; mounted charts are resized
+      // in place, and cards that mount later re-measure.
+      chartSizeCache.width = 0;
       Object.values(chartInstances).forEach(inst => {
         if (inst.chart && inst.chartContainer) {
           inst.chart.resize(inst.chartContainer.clientWidth, inst.chartContainer.clientHeight);
@@ -1790,6 +2348,9 @@
         if (document.getElementById('panel-analytics')?.classList.contains('active')) loadData();
       }
       if (document.getElementById('panel-economy')?.classList.contains('active')) renderEconomyFlow();
+      // The tape's crawl is measured in pixels from the live font size, and
+      // full-tab raises it, so the sets have to be re-fitted to cover again.
+      if (els.marketTape.style.display !== 'none') fitTape();
     }, 150);
   });
 
@@ -1802,7 +2363,29 @@
   let marketPollTimer = null;
   let marketStaleTimer = null;
   let marketFilterValue = 'all';
+  let marketSectorFilter = 'all';
   let marketSearchTerm = '';
+  let marketViewMode = 'table'; // 'table' or 'map'
+
+  /* Commodity sectors: the game API exposes no category field, so items are
+     classified by keywords in their label/id. Layout groups items by sector,
+     sorted by 24h volume within each sector. */
+  const COMMODITY_SECTOR_DEFS = [
+    { key: 'resources', label: 'Raw Resources', color: '#8e9296', kw: ['ore','wood','stone','sand','clay','dirt','rock','mineral','raw','log','timber','lumber','iron','copper','gold','silver','coal'] },
+    { key: 'agriculture', label: 'Agriculture', color: '#6fae4e', kw: ['wheat','corn','rice','barley','oat','soy','cotton','sugar','coffee','tea','cocoa','fruit','vegetable','potato','tomato','apple','berry','grain','crop','farm','food','meat','fish','milk','egg','wool','leather','hide','tobacco','spice','herb','rubber'] },
+    { key: 'energy', label: 'Energy', color: '#d9a441', kw: ['oil','gas','petrol','fuel','coal','power','energy','solar','wind','nuclear','uranium','plutonium','battery','cell'] },
+    { key: 'materials', label: 'Materials', color: '#bf6b3a', kw: ['steel','cement','concrete','brick','glass','plastic','chemical','chem','fiber','fabric','textile','cloth','paper','pulp','aluminum','aluminium','copper','wire','pipe','beam','plate','sheet','metal','alloy'] },
+    { key: 'goods', label: 'Consumer Goods', color: '#cf6fa8', kw: ['bread','flour','beer','wine','liquor','alcohol','clothing','cloth','garment','furniture','chair','table','tool','weapon','ammo','bullet','explosive','medicine','drug','pharma','health','electronics','device','machine','part','component'] },
+    { key: 'luxury', label: 'Luxury', color: '#a07fd8', kw: ['jewel','diamond','gem','art','painting','sculpture','luxury','premium','rare','exotic','perfume','watch','jewelry','gold','silver','platinum'] },
+  ];
+  const COMMODITY_SECTOR_OTHER = { key: 'other', label: 'Other', color: '#4d4d56', kw: [], dark: true };
+  COMMODITY_SECTOR_DEFS.forEach(s => { s.re = new RegExp(`\\b(${s.kw.join('|')})`, 'i'); });
+
+  function commoditySectorOf(item) {
+    const hay = `${item.label || ''} ${item.id || ''} ${item.kind || ''}`.toLowerCase();
+    for (const s of COMMODITY_SECTOR_DEFS) if (s.re.test(hay)) return s;
+    return COMMODITY_SECTOR_OTHER;
+  }
 
   function marketMetrics(item) {
     const book = item.book || {};
@@ -1838,13 +2421,15 @@
     const tags = (n.held > 0 ? `<span class="market-tag held">Held ${fmtNum(n.held)}</span>` : '')
       + (item.flat ? '<span class="market-tag flat">Flat</span>' : '');
     const npc = v => v == null ? '<span style="color:var(--bone-muted);">—</span>' : fmt(v);
+    const sector = commoditySectorOf(item);
     return `<tr data-id="${escapeText(item.id)}" data-name="${escapeText(String(item.label).toLowerCase())}"
       data-price="${item.price}" data-daypct="${item.dayPct}" data-base="${n.base}" data-spread="${n.spread}"
       data-npcbid="${n.npcBid == null ? -1 : n.npcBid}" data-npcask="${n.npcAsk == null ? -1 : n.npcAsk}"
       data-bestbid="${n.bestBid}" data-biddepth="${n.bidDepth}" data-bestask="${n.bestAsk}"
       data-askdepth="${n.askDepth}" data-trend="${n.trend}" data-volume="${n.volume}" data-held="${n.held}"
       data-hasasks="${n.asks.length ? 1 : 0}" data-hasbids="${n.bids.length ? 1 : 0}"
-      data-npc="${n.npcBid != null || n.npcAsk != null ? 1 : 0}" data-flat="${item.flat ? 1 : 0}">
+      data-npc="${n.npcBid != null || n.npcAsk != null ? 1 : 0}" data-flat="${item.flat ? 1 : 0}"
+      data-sector="${sector.key}">
       <td><span class="market-name-cell">${escapeText(item.label)}</span>${tags}<span class="market-kind">${escapeText(item.id)}</span></td>
       <td>${fmt(item.price)}</td>
       <td class="change-cell ${dayClass}">${item.dayPct >= 0 ? '+' : ''}${item.dayPct.toFixed(2)}%</td>
@@ -1893,7 +2478,9 @@
     if (!els.marketBody) return 0;
     const needle = marketSearchTerm.trim().toLowerCase();
     let visible = 0;
-    els.marketBody.querySelectorAll('tr').forEach(row => {
+    const sectorHeaderVisibility = new Map();
+    // First pass: determine which item rows match the filter.
+    els.marketBody.querySelectorAll('tr:not(.market-sector-header)').forEach(row => {
       const d = row.dataset;
       let match = !needle || (d.name || '').includes(needle) || (d.id || '').toLowerCase().includes(needle);
       if (match && marketFilterValue === 'asks') match = d.hasasks === '1';
@@ -1901,12 +2488,27 @@
       else if (match && marketFilterValue === 'held') match = Number(d.held) > 0;
       else if (match && marketFilterValue === 'npc') match = d.npc === '1';
       else if (match && marketFilterValue === 'flat') match = d.flat === '1';
+      // Sector filter.
+      if (match && marketSectorFilter !== 'all') match = d.sector === marketSectorFilter;
       row.style.display = match ? '' : 'none';
-      if (match) visible++;
+      if (match) {
+        visible++;
+        const sec = d.sector;
+        sectorHeaderVisibility.set(sec, true);
+      }
+    });
+    // Second pass: show/hide sector headers based on whether any items in that sector are visible.
+    els.marketBody.querySelectorAll('tr.market-sector-header').forEach(header => {
+      const sec = header.dataset.sector;
+      header.style.display = sectorHeaderVisibility.has(sec) ? '' : 'none';
     });
     if (els.marketEmpty) {
-      const hasRows = els.marketBody.querySelectorAll('tr').length > 0;
+      const hasRows = els.marketBody.querySelectorAll('tr:not(.market-sector-header)').length > 0;
       els.marketEmpty.style.display = hasRows && visible === 0 ? 'block' : 'none';
+    }
+    // Only update treemap if in map view and container is visible.
+    if (marketViewMode === 'map' && els.marketMapWrap && els.marketMapWrap.style.display !== 'none') {
+      renderMarketTreemap();
     }
     return visible;
   }
@@ -1918,12 +2520,200 @@
       els.marketBody.innerHTML = '';
       if (els.marketSummary) els.marketSummary.innerHTML = '';
       if (els.marketEmpty) els.marketEmpty.style.display = 'none';
+      if (els.marketTreemap) els.marketTreemap.innerHTML = '<div style="padding:20px;text-align:center;color:var(--bone-muted);">No market data</div>';
       return;
     }
-    els.marketBody.innerHTML = scan.items.map(marketRowHtml).join('');
+    // Populate sector filter dropdown with sectors that have items.
+    if (els.marketSectorFilter) {
+      const sectorCounts = new Map();
+      scan.items.forEach(item => {
+        const s = commoditySectorOf(item);
+        sectorCounts.set(s.key, (sectorCounts.get(s.key) || 0) + 1);
+      });
+      const opts = ['<option value="all">All Sectors</option>'];
+      COMMODITY_SECTOR_DEFS.forEach(s => {
+        if (sectorCounts.has(s.key)) {
+          opts.push(`<option value="${s.key}">${s.label} (${sectorCounts.get(s.key)})</option>`);
+        }
+      });
+      if (sectorCounts.has(COMMODITY_SECTOR_OTHER.key)) {
+        opts.push(`<option value="${COMMODITY_SECTOR_OTHER.key}">Other (${sectorCounts.get(COMMODITY_SECTOR_OTHER.key)})</option>`);
+      }
+      els.marketSectorFilter.innerHTML = opts.join('');
+      // Restore the current selection if it still exists.
+      if (marketSectorFilter !== 'all' && !sectorCounts.has(marketSectorFilter)) {
+        marketSectorFilter = 'all';
+      }
+      els.marketSectorFilter.value = marketSectorFilter;
+    }
+    // Sort by sector, then by 24h volume (descending) within each sector.
+    const sectorOrder = new Map(COMMODITY_SECTOR_DEFS.map((s, i) => [s.key, i]));
+    sectorOrder.set(COMMODITY_SECTOR_OTHER.key, COMMODITY_SECTOR_DEFS.length);
+    const sorted = [...scan.items].sort((a, b) => {
+      const sa = commoditySectorOf(a), sb = commoditySectorOf(b);
+      const oi = (sectorOrder.get(sa.key) || 99) - (sectorOrder.get(sb.key) || 99);
+      if (oi !== 0) return oi;
+      const va = marketMetrics(a).volume, vb = marketMetrics(b).volume;
+      return vb - va;
+    });
+    // Build HTML with sector header rows.
+    let html = '';
+    let lastSector = null;
+    sorted.forEach(item => {
+      const sector = commoditySectorOf(item);
+      if (sector.key !== lastSector) {
+        const sectorItems = sorted.filter(i => commoditySectorOf(i).key === sector.key);
+        const totalVol = sectorItems.reduce((s, i) => s + marketMetrics(i).volume, 0);
+        const avgChange = sectorItems.reduce((s, i) => s + (Number(i.dayPct) || 0), 0) / sectorItems.length;
+        html += `<tr class="market-sector-header" data-sector="${sector.key}">
+          <td colspan="14">
+            <span class="sector-swatch" style="background:${sector.color};"></span>
+            <span class="sector-label">${sector.label}</span>
+            <span class="sector-count">${sectorItems.length} items</span>
+            <span class="sector-stats">Vol ${fmtNum(totalVol)} · Avg ${avgChange >= 0 ? '+' : ''}${avgChange.toFixed(2)}%</span>
+          </td>
+        </tr>`;
+        lastSector = sector.key;
+      }
+      html += marketRowHtml(item);
+    });
+    els.marketBody.innerHTML = html;
     renderMarketSummary();
     applyMarketFilter();
     renderEconomyPulse();
+    // Only render treemap if in map view and container is visible.
+    if (marketViewMode === 'map' && els.marketMapWrap && els.marketMapWrap.style.display !== 'none') {
+      renderMarketTreemap();
+    }
+  }
+
+  // Treemap layout: binary slice-and-dice with near-half splits.
+  function treemapLayout(items, x, y, w, h) {
+    const total = items.reduce((s, i) => s + i.value, 0);
+    if (!items.length || total <= 0 || w <= 0 || h <= 0) return [];
+    const rects = [];
+    function layout(list, x, y, w, h, total) {
+      if (!list.length || w <= 0 || h <= 0) return;
+      if (list.length === 1) {
+        rects.push({ item: list[0], x, y, w, h });
+        return;
+      }
+      // Find the split point closest to half the total. Never take the whole
+      // list (that would recurse with identical arguments forever).
+      let sum = 0, splitIdx = 0;
+      for (let i = 0; i < list.length - 1; i++) {
+        sum += list[i].value;
+        if (sum >= total / 2) { splitIdx = i + 1; break; }
+      }
+      if (splitIdx === 0) splitIdx = 1;
+      const left = list.slice(0, splitIdx);
+      const right = list.slice(splitIdx);
+      let leftTotal = left.reduce((s, i) => s + i.value, 0);
+      let rightTotal = total - leftTotal;
+      // Degenerate weights (all zero on one side): split evenly by count.
+      if (leftTotal <= 0 || rightTotal <= 0) {
+        leftTotal = left.length;
+        rightTotal = right.length;
+        total = list.length;
+      }
+      const isHorizontal = w >= h;
+      if (isHorizontal) {
+        const leftW = (leftTotal / total) * w;
+        layout(left, x, y, leftW, h, leftTotal);
+        layout(right, x + leftW, y, w - leftW, h, rightTotal);
+      } else {
+        const leftH = (leftTotal / total) * h;
+        layout(left, x, y, w, leftH, leftTotal);
+        layout(right, x, y + leftH, w, h - leftH, rightTotal);
+      }
+    }
+    layout(items, x, y, w, h, total);
+    return rects;
+  }
+
+  function changeColor(pct) {
+    if (pct > 2) return '#00ff00';
+    if (pct > 0) return '#90ee90';
+    if (pct === 0) return '#808080';
+    if (pct > -2) return '#ff9999';
+    return '#ff0000';
+  }
+
+  function renderMarketTreemap() {
+    const container = els.marketTreemap;
+    if (!container) return;
+    const scan = currentMarketScan;
+    if (!scan || !Array.isArray(scan.items) || !scan.items.length) {
+      container.innerHTML = '<div style="padding:20px;text-align:center;color:var(--bone-muted);">No market data</div>';
+      return;
+    }
+    // Group items by sector.
+    const sectorGroups = new Map();
+    scan.items.forEach(item => {
+      const sector = commoditySectorOf(item);
+      if (!sectorGroups.has(sector.key)) sectorGroups.set(sector.key, { sector, items: [] });
+      sectorGroups.get(sector.key).items.push(item);
+    });
+    // Sort sectors by total volume.
+    const sectors = Array.from(sectorGroups.values()).map(sg => {
+      const totalVol = sg.items.reduce((s, i) => s + marketMetrics(i).volume, 0);
+      return { ...sg, totalVol };
+    }).sort((a, b) => b.totalVol - a.totalVol);
+    // Apply filters.
+    const needle = marketSearchTerm.trim().toLowerCase();
+    const filteredSectors = sectors.map(sg => {
+      const items = sg.items.filter(item => {
+        let match = !needle || (item.label || '').toLowerCase().includes(needle) || (item.id || '').toLowerCase().includes(needle);
+        if (match && marketSectorFilter !== 'all') match = commoditySectorOf(item).key === marketSectorFilter;
+        return match;
+      });
+      return { ...sg, items };
+    }).filter(sg => sg.items.length > 0);
+    // Layout sectors.
+    const rect = container.getBoundingClientRect();
+    const W = rect.width || 800;
+    const H = rect.height || 500;
+    const totalVol = filteredSectors.reduce((s, sg) => s + sg.totalVol, 0);
+    if (totalVol <= 0) {
+      container.innerHTML = '<div style="padding:20px;text-align:center;color:var(--bone-muted);">No volume data</div>';
+      return;
+    }
+    const sectorRects = treemapLayout(filteredSectors.map(sg => ({ sg, value: sg.totalVol })), 0, 0, W, H);
+    let html = '';
+    sectorRects.forEach(({ item: sgItem, x, y, w, h }) => {
+      const sg = sgItem.sg;
+      html += `<div class="treemap-sector" style="left:${x}px;top:${y}px;width:${w}px;height:${h}px;border-color:${sg.sector.color};">`;
+      if (w > 60 && h > 20) {
+        html += `<div class="treemap-sector-label" style="color:${sg.sector.color};">${sg.sector.label}</div>`;
+      }
+      // Layout items within sector, biggest volume first.
+      const volOf = i => marketMetrics(i).volume || 0;
+      const sorted = sg.items.slice().sort((a, b) => volOf(b) - volOf(a));
+      const itemRects = treemapLayout(sorted.map(i => ({ item: i, value: volOf(i) || 1 })), 0, 0, w, h);
+      itemRects.forEach(({ item: iItem, x: ix, y: iy, w: iw, h: ih }) => {
+        const item = iItem.item;
+        const metrics = marketMetrics(item);
+        const dayPct = Number(item.dayPct) || 0;
+        const color = changeColor(dayPct);
+        const showLabel = iw > 40 && ih > 15;
+        const showPrice = iw > 50 && ih > 25;
+        html += `<div class="treemap-item" data-id="${escapeText(item.id)}" style="left:${ix}px;top:${iy}px;width:${iw}px;height:${ih}px;background:${color};">`;
+        if (showLabel) html += `<div class="treemap-item-name">${escapeText(item.label)}</div>`;
+        if (showPrice) {
+          html += `<div class="treemap-item-price">${fmt(metrics.last || item.price)}</div>`;
+          html += `<div class="treemap-item-change">${dayPct >= 0 ? '+' : ''}${dayPct.toFixed(2)}%</div>`;
+        }
+        html += `</div>`;
+      });
+      html += `</div>`;
+    });
+    container.innerHTML = html;
+    // Click handlers for items.
+    container.querySelectorAll('.treemap-item').forEach(el => {
+      el.addEventListener('click', () => {
+        if (el.dataset.id) openMarketDetail(el.dataset.id);
+      });
+    });
   }
 
   function showMarketStatus(html, isError) {
@@ -1962,6 +2752,7 @@
   function setMarketScanning(busy) {
     if (!els.marketScanBtn) return;
     els.marketScanBtn.disabled = busy;
+    els.marketScanBtn.classList.toggle('busy', busy);
     els.marketScanBtn.textContent = busy ? 'Scanning…' : 'Scan Market';
   }
 
@@ -2033,6 +2824,7 @@
     // Unhide first: drawSpark sizes the canvas from clientWidth, which is 0
     // while the overlay is still display:none.
     els.marketDetailOverlay.classList.remove('hidden');
+    els.marketDetailOverlay.classList.remove('closing');
     renderMarketDetail(item);
   }
 
@@ -2111,13 +2903,38 @@
   if (els.marketFilter) {
     els.marketFilter.addEventListener('change', () => { marketFilterValue = els.marketFilter.value; applyMarketFilter(); });
   }
+  if (els.marketSectorFilter) {
+    els.marketSectorFilter.addEventListener('change', () => { marketSectorFilter = els.marketSectorFilter.value; applyMarketFilter(); if (marketViewMode === 'map' && els.marketMapWrap && els.marketMapWrap.style.display !== 'none') renderMarketTreemap(); });
+  }
+  // View toggle (table/map).
+  const viewBtns = document.querySelectorAll('.view-btn');
+  if (viewBtns.length) {
+    // Set initial active state based on marketViewMode.
+    viewBtns.forEach(b => {
+      b.classList.toggle('active', b.dataset.view === marketViewMode);
+    });
+    viewBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        viewBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        marketViewMode = btn.dataset.view;
+        if (els.marketMapWrap) els.marketMapWrap.style.display = marketViewMode === 'map' ? 'block' : 'none';
+        if (els.marketTableWrap) els.marketTableWrap.style.display = marketViewMode === 'table' ? 'block' : 'none';
+        if (marketViewMode === 'map') {
+          // Force layout so getBoundingClientRect returns correct dimensions.
+          if (els.marketMapWrap) els.marketMapWrap.offsetHeight;
+          renderMarketTreemap();
+        }
+      });
+    });
+  }
   if (els.marketScanBtn) {
     els.marketScanBtn.addEventListener('click', () => startMarketScan());
   }
   if (els.marketDetailClose) {
-    els.marketDetailClose.addEventListener('click', () => els.marketDetailOverlay.classList.add('hidden'));
+    els.marketDetailClose.addEventListener('click', () => closeOverlay(els.marketDetailOverlay));
     els.marketDetailOverlay.addEventListener('click', e => {
-      if (e.target === els.marketDetailOverlay) els.marketDetailOverlay.classList.add('hidden');
+      if (e.target === els.marketDetailOverlay) closeOverlay(els.marketDetailOverlay);
     });
   }
 
@@ -2164,21 +2981,22 @@
     await refreshEconomy();
   }
 
-  async function refreshEconomy() {
+  async function refreshEconomy(silent) {
     if (economyBusy) return;
     economyBusy = true;
-    if (els.economyRefreshBtn) { els.economyRefreshBtn.disabled = true; els.economyRefreshBtn.textContent = 'Refreshing…'; }
-    showEconomyStatus('Fetching economy snapshot…', false);
+    if (!silent && els.economyRefreshBtn) { els.economyRefreshBtn.disabled = true; els.economyRefreshBtn.textContent = 'Refreshing…'; }
+    if (!silent) showEconomyStatus('Fetching economy snapshot…', false);
     let resp = null;
-    try { resp = await sendMessage({ type: 'FETCH_ECONOMY' }); } catch (e) { resp = null; }
+    try { resp = await sendMessage({ type: 'FETCH_ECONOMY' }, { silent: !!silent }); } catch (e) { resp = null; }
     economyBusy = false;
-    if (els.economyRefreshBtn) { els.economyRefreshBtn.disabled = false; els.economyRefreshBtn.textContent = 'Refresh'; }
+    if (!silent && els.economyRefreshBtn) { els.economyRefreshBtn.disabled = false; els.economyRefreshBtn.textContent = 'Refresh'; }
     if (!resp?.success || !resp.data) {
-      showEconomyStatus('Economy refresh failed: ' + escapeText(marketStaleHint(resp)), true);
+      if (!silent) showEconomyStatus('Economy refresh failed: ' + escapeText(marketStaleHint(resp)), true);
       return;
     }
     currentEconomy = resp.data;
     renderEconomy();
+    if (silent) return;
     const errs = currentEconomy.errors || [];
     if (errs.length) {
       showEconomyStatus(`Snapshot · ${timeAgo(currentEconomy.fetchedAt)} · ${errs.length} section(s) failed: ${escapeText(errs.join(' · '))}`, true);
@@ -2235,6 +3053,7 @@
 
   function renderEconomy() {
     if (!currentEconomy || !els.economySummary) return;
+    renderLiquidBar();
     renderEconomySummary();
     renderEconomyWorld();
     renderEconomyRates();
@@ -2247,15 +3066,240 @@
     renderEconomyPulse();
   }
 
+  /* Liquid Money bar (topbar): personal checking + parked savings accounts +
+     the main and bank pools of every company the player founded — the same
+     definition the game uses for its MONEY figure, where savings count as
+     liquid. Read-only projection of the economy digest — no extra game-API
+     calls. */
+  const LIQUID_SEG_COLORS = ['#d9a441', '#5f8fd8', '#6fae4e', '#cf6fa8', '#a07fd8', '#4fb3a6', '#d16a5a', '#bf6b3a', '#8e9296'];
+
+  function liquidSources(eco) {
+    const liq = eco?.liquid || null;
+    const accounts = Array.isArray(liq?.personalAccounts) ? liq.personalAccounts : null;
+    const parked = accounts ? accounts.filter(a => !a?.isPrimary) : [];
+    const primary = accounts ? accounts.find(a => a?.isPrimary) : null;
+    const checking = Number(liq ? liq.personalCash : eco?.world?.cash) || 0;
+    const savings = liq
+      ? Number(liq.bankTotal) || 0
+      : (Array.isArray(eco?.bank?.accounts)
+          ? eco.bank.accounts.filter(a => !a?.isPrimary && a?.kind !== 'revenue').reduce((s, a) => s + (Number(a?.balance) || 0), 0)
+          : Number(eco?.bank?.total) || 0);
+    const cos = liq
+      ? (Array.isArray(liq.companies) ? liq.companies : [])
+      : (Array.isArray(eco?.companies) ? eco.companies.filter(c => c?.isFounder) : []);
+    // The savings chip carries the exact per-account rows the game's MONEY
+    // tooltip lists under Savings (e.g. "Savings … · Loan repayment plan …").
+    const srcs = [
+      {
+        label: 'Checking',
+        value: checking,
+        color: LIQUID_SEG_COLORS[0],
+        detail: primary?.name && String(primary.name).toLowerCase() !== 'checking' ? String(primary.name) : null
+      },
+      {
+        label: 'Savings',
+        value: savings,
+        color: LIQUID_SEG_COLORS[1],
+        detail: parked.length ? parked.map(a => `${a?.name || 'Account'} ${fmt(a?.balance)}`).join(' · ') : null
+      }
+    ];
+    cos.forEach((c, i) => {
+      const main = Number(c?.mainBalance) || 0;
+      const rev = Number(c?.revenueBalance) || 0;
+      const bank2 = Number(c?.bankBalance) || 0;
+      const accts = Array.isArray(c?.bankAccounts) ? c.bankAccounts : [];
+      // Company bank accounts are only served while that company is piloted,
+      // so a figure can be live, projected from the last pilot read, or
+      // unknown if the extension has never seen them.
+      const seen = c?.bankLive ? 'live' : (c?.bankTs ? `seen ${timeAgo(c.bankTs)}` : 'pilot company to track');
+      const parts = [`Main ${fmt(main)}`, `Revenue ${fmt(rev)}`, `Savings ${fmt(bank2)} (${seen})`];
+      if (accts.length) parts.push(accts.length === 1 ? '1 savings acct' : `${accts.length} savings accts`);
+      srcs.push({
+        label: c?.name || 'Company',
+        value: main + rev + bank2,
+        detail: parts.join(' · '),
+        color: LIQUID_SEG_COLORS[(i + 2) % LIQUID_SEG_COLORS.length]
+      });
+    });
+    return { srcs, companyCount: cos.length, personal: checking + savings };
+  }
+
+  function renderLiquidBar() {
+    if (!els.liquidBar) return;
+    if (!currentEconomy) {
+      els.liquidTotal.textContent = '—';
+      els.liquidMeta.textContent = 'Awaiting economy snapshot…';
+      els.liquidTrack.innerHTML = '';
+      els.liquidLegend.innerHTML = '<span class="liquid-note">Liquid assets appear once the economy snapshot loads.</span>';
+      return;
+    }
+    const { srcs, companyCount, personal } = liquidSources(currentEconomy);
+    const total = srcs.reduce((s, x) => s + x.value, 0);
+    const at = Number(currentEconomy.liquidAt) || Number(currentEconomy.fetchedAt) || 0;
+    const live = at > 0 && Date.now() - at < LIQUID_POLL_MS * 3;
+    tweenNumber(els.liquidTotal, total, fmt);
+    // The meta line is rewritten only when its content changes: a fresh innerHTML
+    // every 5 s would restart the "live" dot's pulse and read as a flicker.
+    const metaSig = `${personal}|${companyCount}|${live}|${at}|${Math.floor((Date.now() - at) / 60000)}`;
+    if (els.liquidMeta.__sig !== metaSig) {
+      els.liquidMeta.__sig = metaSig;
+      els.liquidMeta.innerHTML =
+        `Personal ${fmt(personal)} · ${companyCount} founded co${companyCount === 1 ? '' : 's'} · ` +
+        (live
+          ? '<span class="liquid-live" title="Personal cash and company balances are re-read every 5 s"><i></i>live</span>'
+          : `updated ${escapeText(timeAgo(at))}`);
+    }
+    const visible = srcs.filter(s => s.value > 0);
+    const basis = s => (total > 0 ? (s.value / total * 100).toFixed(3) : '0') + '%';
+    const keys = visible.map(s => s.label).join('|');
+    if (total > 0 && els.liquidTrack.__keys === keys && els.liquidTrack.children.length === visible.length) {
+      // Same sources as the last poll — slide the widths instead of rebuilding
+      // the bar, so a 5 s refresh reads as the bar rebalancing, not a flicker.
+      visible.forEach((s, i) => {
+        const seg = els.liquidTrack.children[i];
+        seg.style.flexBasis = basis(s);
+        seg.title = `${s.label} · ${fmt(s.value)}${s.detail ? ` (${s.detail})` : ''}`;
+      });
+    } else {
+      els.liquidTrack.innerHTML = total > 0
+        ? visible.map(s =>
+            `<div class="liquid-seg" style="flex:0 0 ${basis(s)};background:${s.color}" title="${escapeText(s.label)} · ${fmt(s.value)}${s.detail ? ` (${escapeText(s.detail)})` : ''}"></div>`
+          ).join('')
+        : '';
+      els.liquidTrack.__keys = total > 0 ? keys : null;
+    }
+    // Same legend as the last poll → update the existing chips in place. A full
+    // innerHTML rewrite every 5 s would discard and rebuild the hovered node.
+    const legendKeys = srcs.map(s => s.label).join('|');
+    if (els.liquidLegend.__keys === legendKeys && els.liquidLegend.children.length === srcs.length) {
+      srcs.forEach((s, i) => {
+        const chip = els.liquidLegend.children[i];
+        const tip = s.detail || '';
+        if (chip.title !== tip) chip.title = tip;
+        const nodes = chip.childNodes;
+        if (nodes[1]) nodes[1].textContent = s.label;
+        if (nodes[2]) nodes[2].nodeValue = ` ${fmt(s.value)} `;
+        if (nodes[3]) nodes[3].textContent = total > 0 ? (s.value / total * 100).toFixed(1) + '%' : '0.0%';
+      });
+    } else {
+      els.liquidLegend.innerHTML = srcs.map(s => {
+        const pct = total > 0 ? (s.value / total * 100).toFixed(1) + '%' : '0.0%';
+        const tip = s.detail ? ` title="${escapeText(s.detail)}"` : '';
+        return `<span class="liquid-chip"${tip}><i style="background:${s.color}"></i><span class="liquid-src">${escapeText(s.label)}</span> ${fmt(s.value)} <span class="liquid-pct">${pct}</span></span>`;
+      }).join('');
+      els.liquidLegend.__keys = legendKeys;
+    }
+  }
+
+  // Topbar bar bootstraps from the cached digest; a stale or missing snapshot
+  // triggers one silent background refresh (no Economy-tab status churn).
+  const LIQUID_FRESH_MS = 600000;
+  async function loadLiquidMoney() {
+    let resp = null;
+    try { resp = await sendMessage({ type: 'GET_ECONOMY' }); } catch (e) { resp = null; }
+    if (resp?.success && resp.data) currentEconomy = resp.data;
+    renderLiquidBar();
+    const age = Date.now() - (currentEconomy?.fetchedAt || 0);
+    if (age < LIQUID_FRESH_MS) return;
+    await refreshEconomy(true);
+  }
+
+  // While the popup is open the Liquid Money bar re-reads the live sources on a
+  // 5 s cadence: personal cash + accounts and the company main/revenue pools,
+  // plus the bank accounts of the piloted company. Company banks that aren't
+  // piloted answer 403 not_your_player, so those chips keep tracking the
+  // interest-projected snapshot until that company is next piloted. The digest
+  // itself still refreshes on its own slower cadence (LIQUID_FRESH_MS).
+  const LIQUID_POLL_MS = 5000;
+  let liquidPollTimer = null;
+  let liquidTickBusy = false;
+  let liquidRenderSig = null;
+
+  function liquidTickSignature(data) {
+    return JSON.stringify([
+      data.liquid.personalCash,
+      data.liquid.bankTotal,
+      (data.liquid.personalAccounts || []).map(a => [a.name, a.balance]),
+      (data.liquid.companies || []).map(c => [c.id, c.mainBalance, c.revenueBalance, c.bankBalance, c.bankLive]),
+      data.world?.netWorth,
+      data.world?.day
+    ]);
+  }
+
+  // Fold the live balances into the Bank table and the company cards so the
+  // whole Economy tab shows the same numbers as the topbar bar.
+  function applyLiquidBalances(eco, data) {
+    const rows = Array.isArray(data.bankBalances) ? data.bankBalances : null;
+    if (rows && Array.isArray(eco.bank?.accounts)) {
+      const byId = new Map();
+      const byName = new Map();
+      rows.forEach(a => {
+        if (a.id != null) byId.set(String(a.id), a);
+        if (!byName.has(a.name)) byName.set(a.name, a);
+      });
+      eco.bank.accounts = eco.bank.accounts.map(a => {
+        const live = (a.id != null ? byId.get(String(a.id)) : null) || byName.get(a.name);
+        return live ? { ...a, balance: live.balance, rate: live.rate, isPrimary: live.isPrimary } : a;
+      });
+      eco.bank.total = eco.bank.accounts.reduce((s, a) => s + (Number(a?.balance) || 0), 0);
+    }
+    const cos = Array.isArray(data.liquid.companies) ? data.liquid.companies : null;
+    if (cos && Array.isArray(eco.companies)) {
+      const byId = new Map(cos.map(c => [String(c.id), c]));
+      eco.companies = eco.companies.map(c => {
+        const live = byId.get(String(c.id));
+        return live ? { ...c, mainBalance: live.mainBalance, revenueBalance: live.revenueBalance } : c;
+      });
+    }
+  }
+
+  function applyLiquidTick(data) {
+    if (!currentEconomy) currentEconomy = { world: {} };
+    const eco = currentEconomy;
+    if (data.world) eco.world = { ...(eco.world || {}), ...data.world };
+    eco.liquid = data.liquid;
+    eco.liquidAt = data.at || Date.now();
+    applyLiquidBalances(eco, data);
+    renderLiquidBar();
+    if (!document.getElementById('panel-economy')?.classList.contains('active')) return;
+    const sig = liquidTickSignature(data);
+    if (sig === liquidRenderSig) return;
+    liquidRenderSig = sig;
+    renderEconomySummary();
+    renderEconomyBank();
+    renderEconomyCompanies();
+  }
+
+  async function tickLiquidMoney() {
+    if (liquidTickBusy) return;
+    liquidTickBusy = true;
+    try {
+      const resp = await sendMessage({ type: 'FETCH_LIQUID' }, { silent: true });
+      if (resp?.success && resp.data?.ok) applyLiquidTick(resp.data);
+    } catch (e) { /* the next tick retries; the bar keeps the last good figures */ }
+    liquidTickBusy = false;
+  }
+
+  function startLiquidPolling() {
+    if (liquidPollTimer) return;
+    liquidPollTimer = setInterval(tickLiquidMoney, LIQUID_POLL_MS);
+  }
+
   function renderEconomySummary() {
     const eco = currentEconomy;
     const r = eco.rates;
     const w = eco.world || {};
     const costs = r ? r.ingredientCostPerMin + r.wagePerMin + r.rentPerMin + r.logisticsWagePerMin : 0;
     const win = economyFlowWindow(eco);
+    // Liquid Cash mirrors the game's MONEY figure: checking + parked savings.
+    // Prefer the liquid block so this card always tracks the topbar bar.
+    const bankAccts = Array.isArray(eco.bank?.accounts) ? eco.bank.accounts : null;
+    const parked = Number(eco.liquid?.bankTotal)
+      || (bankAccts ? bankAccts.filter(a => !a?.isPrimary && a?.kind !== 'revenue').reduce((s, a) => s + (Number(a?.balance) || 0), 0) : 0);
+    const checking = Number(eco.liquid ? eco.liquid.personalCash : w.cash) || 0;
     els.economySummary.innerHTML = statCards([
       ['Game Day', w.day == null ? '—' : fmtNum(w.day)],
-      ['Cash', fmt(w.cash)],
+      ['Liquid Cash', fmt(checking + parked)],
       ['Net Worth', fmt(w.netWorth)],
       ['Net / Min', r ? fmt(r.netPerMin) : '—', r && r.netPerMin < 0 ? 'negative' : 'positive'],
       ['Gross / Min', r ? fmt(r.grossPerMin) : '—'],
@@ -2681,4 +3725,30 @@
   attachTableSort(els.economyQuotesBody?.closest('table'));
 
   loadData();
+  loadLiquidMoney();
+  startLiquidPolling();
+
+  // Boot splash: the CSS timeline runs on its own, so this only has to get the
+  // overlay out of the way — after the timeline, or instantly on any input.
+  // It is hidden, not removed, so nothing can intercept a click later.
+  {
+    const splash = document.getElementById('bootSplash');
+    if (splash) {
+      const BOOT_MS = reducedMotion ? 600 : 5000;
+      let ended = false;
+      const endBoot = () => {
+        if (ended) return;
+        ended = true;
+        clearTimeout(bootTimer);
+        window.removeEventListener('pointerdown', endBoot, true);
+        window.removeEventListener('keydown', endBoot, true);
+        if (reducedMotion) { splash.classList.add('gone'); return; }
+        splash.classList.add('out');
+        setTimeout(() => splash.classList.add('gone'), 210);
+      };
+      const bootTimer = setTimeout(endBoot, BOOT_MS);
+      window.addEventListener('pointerdown', endBoot, true);
+      window.addEventListener('keydown', endBoot, true);
+    }
+  }
 })();

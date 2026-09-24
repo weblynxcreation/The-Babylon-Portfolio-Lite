@@ -12,6 +12,8 @@ A read-only Chrome extension for tracking your Capital Rift stock portfolio, wit
 
 ### Portfolio Management
 - **Real-time Portfolio Value** - Track your total holdings value with 24h progress indicators
+- **Live Market Tape** - Wall-Street style ticker crawling across the very top of the popup, above the logo: every listed company as ticker · name · price · 24h change, colour-coded green / red / amber, with a pulsing **LIVE** badge (it falls back to **STALE** when the last poll ages out) and a `N listed · X up · Y down` board count. The ticker sign is derived from the company name — the game exposes no symbol field. Crawl speed is derived from the width of the whole listing board instead of being fixed, so **every** stock crosses the window on each loop: a small market keeps the slow, calm pace and a large one runs faster (capped at the point a ticker stops being readable). The tape rides the existing portfolio poll instead of adding requests of its own: prices are patched in place so the crawl never restarts, a cell flashes the colour of its move, hovering pauses the tape so a quote can be read, and it holds still when the OS asks for reduced motion. Hidden when the market has no listings
+- **Liquid Money Bar** - Topbar strip under the portfolio summary totalling your liquid assets: personal cash, personal bank accounts, and each founded company's main till, revenue share and bank/savings accounts, drawn as a proportional breakdown with per-source value chips (hover a company chip for its Main / Revenue / Bank split). The bar re-reads every one of those balances **every 5 seconds** while the popup is open — the green **live** badge in the bar shows the figures are current. Only the company you are piloting can be read through the game API, so a company you are not piloting shows its bank accounts projected from the last snapshot at the account interest rate, and its chip says which (`seen 2h ago`, `pilot company to track`)
 - **Holdings Overview** - View all owned shares with current prices and yields
 - **Dividend Tracking** - Monitor expected annual dividends from your portfolio, with totals and a per-company breakdown on the Dividends tab
 - **Portfolio Value Chart** - Visualize portfolio performance over time (1H, 24H timeframes)
@@ -54,6 +56,7 @@ A read-only Chrome extension for tracking your Capital Rift stock portfolio, wit
 - **Responsive Layout** - Optimized for 800x600 popup and full browser tab
 - **Toast Notifications** - Real-time feedback on all actions
 - **Smooth Animations** - Polished transitions and interactions
+- **Boot Intro** - Terminal-style splash on open with a stepped boot log and market ticker; skips on the first click or key press
 
 ### Remote Access
 - **Mobile Portfolio Viewer** - Access your portfolio from any device via hosted URL

@@ -7,20 +7,93 @@ const ORIGIN = 'https://play.capitalrift.com/api';
 const PID_KEY = 'babylon_player_id';
 const JSON_HEADERS = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
 
+// ---- Hardened fetch layer -------------------------------------------------
+// Every request in this worker is bounded by a timeout, identical concurrent
+// reads share one network round trip, and a read gets a single retry when the
+// network drops or the server answers 5xx/429. Writes are never coalesced or
+// retried — replaying a POST could double-place an order.
+const nativeFetch = globalThis.fetch.bind(globalThis);
+const FETCH_TIMEOUT_MS = 20000;
+const inflightReads = new Map(); // "GET <url>" -> Promise<Response>
+
+function sleepMs(ms){ return new Promise(r => setTimeout(r, ms)); }
+function cloneIfPossible(res){ return res && typeof res.clone === 'function' ? res.clone() : res; }
+
+async function fetchOnce(url, init, timeoutMs){
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => { try { ctrl.abort(); } catch (e) {} }, timeoutMs);
+  try {
+    return await nativeFetch(url, init.signal ? init : { ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readWithRetry(url, init, timeoutMs){
+  let res;
+  try {
+    res = await fetchOnce(url, init, timeoutMs);
+  } catch (e) {
+    if (e && e.name === 'AbortError') throw e;   // slow server: a retry only doubles the wait
+    await sleepMs(200 + Math.random() * 200);
+    return fetchOnce(url, init, timeoutMs);
+  }
+  if (res.status === 429 || res.status >= 500) {
+    await sleepMs(200 + Math.random() * 200);
+    return fetchOnce(url, init, timeoutMs);
+  }
+  return res;
+}
+
+async function apiFetch(url, init = {}){
+  const method = String(init.method || 'GET').toUpperCase();
+  if (method !== 'GET') return fetchOnce(url, init, FETCH_TIMEOUT_MS + 10000);
+
+  const key = `GET ${url}`;
+  const shared = inflightReads.get(key);
+  if (shared) return cloneIfPossible(await shared);
+
+  const p = readWithRetry(url, init, FETCH_TIMEOUT_MS);
+  inflightReads.set(key, p);
+  const clear = () => { if (inflightReads.get(key) === p) inflightReads.delete(key); };
+  p.then(clear, clear);
+  return cloneIfPossible(await p);
+}
+
+// Every call site in this file keeps using plain `fetch(...)`; the binding
+// below routes them through the policy above.
+const fetch = apiFetch;
+
 let PLAYER_ID = null;
+let PILOTING = null;   // /api/me.piloting (the company currently being piloted) or null
+let meCheckedAt = 0;   // ms timestamp of the last successful /api/me read
+const ME_TTL = 30000;
+
+// Single /api/me reader: resolves the player id and the company being piloted
+// (the game client's acting identity). Kept warm for ME_TTL so a poll and a
+// popup open in the same window share one request.
+async function resolveMe(force) {
+  const now = Date.now();
+  if (!force && meCheckedAt && now - meCheckedAt < ME_TTL) return;
+  const res = await fetch(`${ORIGIN}/me`, { method: 'GET', credentials: 'include', headers: { 'Accept': 'application/json' } });
+  if (!res.ok) throw new Error(`Cannot resolve player id (HTTP ${res.status}). Sign in play.capitalrift.com first.`);
+  const me = await res.json();
+  const pid = me?.playerId || me?.player?.id || me?.id || me?.uuid || null;
+  if (!pid) throw new Error('Player id missing from /api/me response');
+  PLAYER_ID = pid;
+  const p = me?.piloting;
+  PILOTING = p && p.companyId != null ? { companyId: p.companyId, name: p.name ?? null } : null;
+  meCheckedAt = now;
+  try { await chrome.storage.local.set({ [PID_KEY]: pid }); } catch (e) {}
+}
+
 async function ensurePlayerId() {
   if (PLAYER_ID) return PLAYER_ID;
   try {
     const cached = await chrome.storage.local.get(PID_KEY);
     if (cached && cached[PID_KEY]) { PLAYER_ID = cached[PID_KEY]; return PLAYER_ID; }
   } catch (e) { /* fall through to network resolve */ }
-  const res = await fetch(`${ORIGIN}/me`, { method: 'GET', credentials: 'include', headers: { 'Accept': 'application/json' } });
-  if (!res.ok) throw new Error(`Cannot resolve player id (HTTP ${res.status}). Sign in at play.capitalrift.com first.`);
-  const me = await res.json();
-  const pid = me?.playerId || me?.player?.id || me?.id || me?.uuid || null;
-  if (!pid) throw new Error('Player id missing from /api/me response');
-  PLAYER_ID = pid;
-  try { await chrome.storage.local.set({ [PID_KEY]: pid }); } catch (e) {}
+  await resolveMe(true);
   return PLAYER_ID;
 }
 // Absolute URL for a per-player game route, e.g. await gameUrl('/shares/listings')
@@ -46,13 +119,14 @@ const STORAGE_KEYS = {
   DIAG: 'babylon_diag',
   MARKET_SCAN: 'babylon_market_scan',
   MARKET_SCAN_PROGRESS: 'babylon_market_scan_progress',
-  ECONOMY: 'babylon_economy'
+  ECONOMY: 'babylon_economy',
+  COMPANY_BANKS: 'babylon_company_banks'
 };
 
 // Bump on every detection change. Written to storage at worker start so the
 // popup can show which build is actually live (a stale unpacked extension is
 // otherwise indistinguishable from a broken one).
-const DETECTION_BUILD = 'v2 · 2026-09-21';
+const DETECTION_BUILD = 'v3 · 2026-09-23';
 let portfolioCache = null, dividendsCache = null, transactionsCache = null, settingsCache = null, lastApiCache = null, ipoCache = null, bankTransactionsCache = null;
 let previousHoldingsMap = null;
 let previousOrders = null;
@@ -336,6 +410,100 @@ function economyNum(rows, pick) {
   return (Array.isArray(rows) ? rows : []).reduce((s, r) => s + (Number(pick(r)) || 0), 0);
 }
 
+// Liquid-money projection shared by the full economy digest and the 5 s topbar
+// refresh: personal cash + bank balances plus the main, revenue and bank pools
+// of every founded company. The game's own MONEY figure sums every personal
+// bank account (Checking + Savings + Loan repayment plan), so parked savings
+// count as liquid too: personalCash is the primary checking account and
+// bankTotal is every other personal account. Revenue entries are per-member
+// escrow and stay excluded to avoid double counting.
+//
+// Company bank accounts (incl. savings) are only served while that company is
+// piloted — GET /api/game/{companyId} answers 403 not_your_player for every
+// other company (verified live 2026-09-22). So each company is read live only
+// while it matches /api/me.piloting, then its account list is snapshotted;
+// companies not being piloted show the last snapshot with each balance grown
+// at its per-real-hour interest rate (interest compounds whether or not the
+// player is online, so the projection stays accurate until the player next
+// moves money in or out of the account).
+async function buildLiquid(game, mine, settle) {
+  const pilotId = PILOTING?.companyId == null ? null : String(PILOTING.companyId);
+  const foundedCompanies = (Array.isArray(mine?.companies) ? mine.companies : []).filter(c => c?.isFounder);
+  let storedBanks = {};
+  try { storedBanks = (await chrome.storage.local.get(STORAGE_KEYS.COMPANY_BANKS))[STORAGE_KEYS.COMPANY_BANKS] || {}; } catch (e) {}
+  const nowMs = Date.now();
+  const companyBanks = [];
+  let banksDirty = false;
+  for (const c of foundedCompanies) {
+    const key = c?.id == null ? null : String(c.id);
+    const prev = key ? storedBanks[key] : null;
+    const state = key && pilotId === key
+      ? await settle(`company:${c.id}`, () => fetchJsonAbs(`${ORIGIN}/game/${encodeURIComponent(c.id)}`))
+      : null;
+    const accts = Array.isArray(state?.bank?.accounts) ? state.bank.accounts : null;
+    if (accts) {
+      const rows = accts.map(a => ({
+        kind: a?.kind ?? 'savings',
+        name: a?.name ?? 'Account',
+        isPrimary: !!a?.isPrimary,
+        balance: Number(a?.balance) || 0,
+        rate: Number(a?.rate) || 0
+      }));
+      if (key) { storedBanks[key] = { ts: nowMs, name: c?.name ?? 'Company', accounts: rows }; banksDirty = true; }
+      companyBanks.push({ ts: nowMs, live: true, accounts: rows });
+    } else if (prev && Array.isArray(prev.accounts) && prev.accounts.length) {
+      const hours = Math.max(0, (nowMs - (Number(prev.ts) || 0)) / 3600000);
+      companyBanks.push({
+        ts: Number(prev.ts) || null,
+        live: false,
+        accounts: prev.accounts.map(a => ({
+          kind: a?.kind ?? 'savings',
+          name: a?.name ?? 'Account',
+          isPrimary: !!a?.isPrimary,
+          balance: (Number(a?.balance) || 0) * Math.exp((Number(a?.rate) || 0) * hours),
+          rate: Number(a?.rate) || 0
+        }))
+      });
+    } else {
+      companyBanks.push(null);
+    }
+  }
+  if (banksDirty) { try { await chrome.storage.local.set({ [STORAGE_KEYS.COMPANY_BANKS]: storedBanks }); } catch (e) {} }
+  const personalAccts = (Array.isArray(game?.bank?.accounts) ? game.bank.accounts : [])
+    .map(a => ({
+      kind: a?.kind ?? null,
+      name: a?.name ?? 'Account',
+      isPrimary: !!a?.isPrimary,
+      balance: Number(a?.balance) || 0,
+      rate: Number(a?.rate) || 0
+    }))
+    .filter(a => a.kind !== 'revenue');
+  return {
+    personalCash: Number(game?.cash) || 0,
+    bankTotal: personalAccts.filter(a => !a.isPrimary).reduce((s, a) => s + a.balance, 0),
+    personalAccounts: personalAccts
+      .slice().sort((x, y) => y.balance - x.balance)
+      .map(a => ({ kind: a.kind, name: a.name, isPrimary: a.isPrimary, rate: a.rate, balance: Math.round(a.balance) })),
+    companies: foundedCompanies.map((c, i) => {
+      const b = companyBanks[i];
+      const extra = b && Array.isArray(b.accounts) ? b.accounts.filter(a => !a.isPrimary && a.kind !== 'revenue') : null;
+      return {
+        id: c?.id ?? null,
+        name: c?.name ?? 'Company',
+        mainBalance: Number(c?.mainBalance) || 0,
+        revenueBalance: Number(c?.revenueBalance) || 0,
+        bankBalance: extra ? extra.reduce((s, a) => s + (Number(a?.balance) || 0), 0) : 0,
+        bankLive: !!(b && b.live),
+        bankTs: b?.ts ?? null,
+        bankAccounts: extra
+          ? extra.slice().sort((x, y) => (Number(y?.balance) || 0) - (Number(x?.balance) || 0))
+              .map(a => ({ kind: a.kind, name: a.name, rate: a.rate, balance: Math.round(Number(a.balance) || 0) }))
+          : null
+      };
+    })
+  };
+}
+
 async function fetchEconomy() {
   const playerId = await ensurePlayerId();
   const errors = [];
@@ -531,6 +699,9 @@ async function fetchEconomy() {
     }))
   } : null;
 
+  await settle('me', () => resolveMe());
+  const liquid = await buildLiquid(game, mine, settle);
+
   const digest = {
     fetchedAt: Date.now(),
     playerId,
@@ -548,11 +719,54 @@ async function fetchEconomy() {
       lifetime: Number(income?.royalty?.lifetime) || 0,
       pendingDay: Number(income?.royalty?.pendingDay) || 0
     },
-    bank, sources, payroll, history, companies, leaderboard, access,
+    bank, sources, payroll, history, companies, leaderboard, access, liquid,
     errors
   };
   await chrome.storage.local.set({ [STORAGE_KEYS.ECONOMY]: digest });
   return digest;
+}
+
+// Liquid-only refresh (read-only, three requests) behind the 5 s topbar
+// cadence. Personal cash/accounts and the company main + revenue pools come
+// straight from the game, so those are live; company bank accounts are live
+// only for the company being piloted (see buildLiquid). The full digest keeps
+// its own slower cadence — this path never touches income, equity, history or
+// leaderboard data. All-or-nothing: if the game state or the company list
+// fails, the popup keeps the last good figures instead of showing zeros.
+async function fetchLiquid() {
+  const errors = [];
+  const settle = async (label, fn) => {
+    try { return await fn(); }
+    catch (e) { errors.push(`${label}: ${e.message}`); return null; }
+  };
+  await settle('me', () => resolveMe());
+  const [game, mine] = await Promise.all([
+    settle('game', async () => fetchJsonAbs(await gameUrl(''))),
+    settle('companies', () => fetchJsonAbs(`${ORIGIN}/company/mine`))
+  ]);
+  if (!game || !mine) return { at: Date.now(), ok: false, errors };
+  const accounts = Array.isArray(game?.bank?.accounts) ? game.bank.accounts : [];
+  return {
+    at: Date.now(),
+    ok: true,
+    liquid: await buildLiquid(game, mine, settle),
+    world: {
+      day: Number(game?.day) || null,
+      cash: Number(game?.cash) || 0,
+      netWorth: Number(game?.netWorth) || 0
+    },
+    // Every personal account (revenue escrow included) so the Economy tab's
+    // Bank table can fold the live balances into the stored digest rows.
+    bankBalances: accounts.map(a => ({
+      id: a?.id ?? null,
+      kind: a?.kind ?? null,
+      name: a?.name ?? 'Account',
+      isPrimary: !!a?.isPrimary,
+      balance: Number(a?.balance) || 0,
+      rate: Number(a?.rate) || 0
+    })),
+    errors
+  };
 }
 
 // Building API
@@ -1336,7 +1550,66 @@ async function getPortfolioData(){
     dividendTransactions: bank.dividends || []
   };
   lastPortfolioResult = { at: Date.now(), data };
+  savePopupSnapshot(data);
   return data;
+}
+
+// The 30s alarm, the game-tab heartbeat, a popup open and a remote read all
+// call for a full portfolio; one run costs three game-API reads plus a
+// detection diff, so overlapping callers share the in-flight run.
+let portfolioInflight = null;
+function getPortfolioDataShared(){
+  if (!portfolioInflight) {
+    const p = getPortfolioData();
+    portfolioInflight = p;
+    const done = () => { if (portfolioInflight === p) portfolioInflight = null; };
+    p.then(done, done);
+  }
+  return portfolioInflight;
+}
+
+// rawApi and the raw bank feeds are never read by the popup or the remote
+// viewer; omitting them keeps a multi-hundred-KB structured clone off every
+// response.
+function popupPayload(data){
+  const { rawApi, bankTransactions, dividendTransactions, ...rest } = data;
+  return rest;
+}
+
+// The popup is a fresh JS context on every open, so its own last paint is gone
+// by the time it reopens. Persisting the payload lets a cold worker answer the
+// first GET_PORTFOLIO from disk instead of blocking on the game API.
+const POPUP_SNAPSHOT_KEY = 'babylon_popup_snapshot';
+const POPUP_SNAPSHOT_MIN_GAP = 60000;
+let popupSnapshot = null;
+let popupSnapshotLoaded = false;
+let popupSnapshotSavedAt = 0;
+
+async function loadPopupSnapshot(){
+  if (popupSnapshotLoaded) return popupSnapshot;
+  popupSnapshotLoaded = true;
+  try {
+    const s = await chrome.storage.local.get(POPUP_SNAPSHOT_KEY);
+    popupSnapshot = (s && s[POPUP_SNAPSHOT_KEY]) || null;
+  } catch (e) { popupSnapshot = null; }
+  return popupSnapshot;
+}
+
+function savePopupSnapshot(data){
+  const now = Date.now();
+  if (now - popupSnapshotSavedAt < POPUP_SNAPSHOT_MIN_GAP) return;
+  popupSnapshotSavedAt = now;
+  popupSnapshot = popupPayload(data);
+  chrome.storage.local.set({ [POPUP_SNAPSHOT_KEY]: popupSnapshot }).catch(() => {});
+}
+
+function refreshPortfolioBehind(){
+  getPortfolioDataShared()
+    .then(fresh => {
+      syncToRemote(fresh).catch(() => {});
+      chrome.runtime.sendMessage({type:'PORTFOLIO_UPDATED'}).catch(()=>{});
+    })
+    .catch(() => {});
 }
 async function syncToRemote(payload) {
   try {
@@ -1345,7 +1618,7 @@ async function syncToRemote(payload) {
 
     // Callers that just fetched the portfolio pass it in; a standalone sync
     // falls back to fetching it here instead of duplicating the API round-trip.
-    const data = payload || await getPortfolioData();
+    const data = payload || await getPortfolioDataShared();
     const res = await fetch(settings.remoteApiUrl + '/api/portfolio?token=' + encodeURIComponent(settings.remoteToken), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1388,13 +1661,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           { // A poll that landed seconds ago already fetched and diffed
             // everything — reuse it unless the caller forces a fresh fetch.
             const cached = !msg.force && lastPortfolioResult && (Date.now() - lastPortfolioResult.at < PORTFOLIO_FRESH_MS);
-            const data = cached ? lastPortfolioResult.data : await getPortfolioData();
-            if (!cached) syncToRemote(data).catch(() => {});
-            // rawApi and the raw bank feeds are never read by the popup;
-            // omitting them keeps a multi-hundred-KB structured clone off
-            // every 30s tick.
-            const { rawApi, bankTransactions, dividendTransactions, ...popupData } = data;
-            sendResponse({success:true, data: popupData}); }
+            if (cached) {
+              // The cached payload froze its transaction slice, but a heartbeat
+              // poll may have logged fills since — re-slice so History is current.
+              sendResponse({success:true, data: popupPayload({ ...lastPortfolioResult.data, transactions: transactionsCache.slice(-50) })});
+              break;
+            }
+            if (!msg.force) {
+              // Stale-while-revalidate: paint from the newest snapshot — memory
+              // if this worker has polled, disk if it just woke — refresh behind
+              // it, then push PORTFOLIO_UPDATED so the view swaps in the fresh
+              // numbers instead of showing a blank wait.
+              const snapshot = lastPortfolioResult ? lastPortfolioResult.data : await loadPopupSnapshot();
+              if (snapshot) {
+                sendResponse({success:true, stale:true, data: popupPayload({ ...snapshot, transactions: transactionsCache.slice(-50) })});
+                refreshPortfolioBehind();
+                break;
+              }
+            }
+            const data = await getPortfolioDataShared();
+            syncToRemote(data).catch(() => {});
+            sendResponse({success:true, data: popupPayload(data)});
+          }
           break;
         case 'GET_PORTFOLIO_DATA':
           const remoteSettings = await chrome.storage.local.get(['remoteAccessEnabled', 'remoteToken']);
@@ -1402,7 +1690,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             sendResponse({success:false, error: 'Invalid token or remote access disabled'});
             break;
           }
-          const portfolioData = await getPortfolioData();
+          const portfolioData = await getPortfolioDataShared();
           sendResponse({success:true, data: portfolioData});
           break;
         // Trading is disabled in this edition: the trade/IPO handlers are gone,
@@ -1422,7 +1710,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({success:true, ipo: ipoCache});
           break;
         case 'REFRESH':
-          sendResponse({success:true, data: await getPortfolioData()});
+          sendResponse({success:true, data: await getPortfolioDataShared()});
           break;
         case 'SITE_TICK':
           // Heartbeat from the game tab: run a poll even if alarms are throttled.
@@ -1508,6 +1796,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({success:true, data: stored[STORAGE_KEYS.ECONOMY] || null});
           break;
         }
+        // Light liquid-only refresh (read-only) behind the 5 s topbar cadence
+        case 'FETCH_LIQUID':
+          sendResponse({success:true, data: await fetchLiquid()});
+          break;
         // Building API
         case 'BUY_BUILDING':
           sendResponse({success:true, result: await buyBuilding(msg.ref, msg.chunkId)});
@@ -1804,8 +2096,11 @@ async function pollPortfolio() {
     chrome.alarms.get(POLL_ALARM, (a) => { if (!a) chrome.alarms.create(POLL_ALARM, { periodInMinutes: 0.5 }); });
     if (settingsCache?.autoRefresh) {
       // getPortfolioData runs the holdings/orders/IPO diff itself.
-      const data = await getPortfolioData();
+      const data = await getPortfolioDataShared();
       chrome.runtime.sendMessage({type:'PORTFOLIO_UPDATED'}).catch(()=>{});
+      // The popup answers from lastPortfolioResult right after this tick, so
+      // the poll has to push the remote copy itself or the viewer goes stale.
+      syncToRemote(data).catch(()=>{});
     } else {
       // Auto-refresh off still has to run the diff or the Transactions tab
       // goes blind to trades made on the website.
